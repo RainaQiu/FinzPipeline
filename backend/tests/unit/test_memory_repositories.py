@@ -15,6 +15,16 @@ from app.domain.classification import (
     DecisionSource,
     TransactionType,
 )
+from app.domain.demo import (
+    DemoGrant,
+    ExecutionLease,
+    PipelineContext,
+    QboConnection,
+    ReconciliationRunRecord,
+    ResetRun,
+    SyncRunRecord,
+    UploadRecord,
+)
 from app.domain.transactions import Direction, NormalizedTransaction, RawRecord
 from app.repositories.memory import InMemoryUnitOfWork
 from app.repositories.protocols import AuditEvent, ImmutableRecordError, OAuthStateExpiredError
@@ -202,3 +212,189 @@ async def test_unit_of_work_exposes_all_repositories_through_an_async_context():
         assert uow.outbox is not None
         assert uow.audit is not None
         assert uow.oauth_states is not None
+
+
+@pytest.mark.asyncio
+async def test_demo_grant_is_single_use_and_expires():
+    uow = InMemoryUnitOfWork()
+    now = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    valid = DemoGrant(
+        token_hash="finz-test-valid-grant",
+        created_at=now,
+        expires_at=now.replace(hour=1),
+    )
+    expired = DemoGrant(
+        token_hash="finz-test-expired-grant",
+        created_at=now,
+        expires_at=now,
+    )
+    await uow.demo_grants.issue(valid)
+    await uow.demo_grants.issue(expired)
+
+    winners = await asyncio.gather(
+        *(uow.demo_grants.consume_valid(valid.token_hash, now=now) for _ in range(8))
+    )
+
+    assert winners.count(valid) == 1
+    assert sum(item is not None for item in winners) == 1
+    assert await uow.demo_grants.consume_valid(valid.token_hash, now=now) is None
+    assert await uow.demo_grants.consume_valid(expired.token_hash, now=now) is None
+
+
+@pytest.mark.asyncio
+async def test_only_one_execution_lease_can_be_active():
+    uow = InMemoryUnitOfWork()
+    now = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    leases = tuple(
+        ExecutionLease(
+            id=f"finz-test-lease-{index}",
+            acquired_at=now,
+            expires_at=now.replace(minute=5),
+        )
+        for index in range(8)
+    )
+
+    acquired = await asyncio.gather(
+        *(uow.execution_leases.acquire(lease, now=now) for lease in leases)
+    )
+
+    assert acquired.count(True) == 1
+    replacement = ExecutionLease(
+        id="finz-test-replacement-lease",
+        acquired_at=now.replace(minute=6),
+        expires_at=now.replace(minute=11),
+    )
+    assert await uow.execution_leases.acquire(
+        replacement, now=now.replace(minute=6)
+    )
+    await uow.execution_leases.release(replacement.id)
+    assert await uow.execution_leases.acquire(replacement, now=now.replace(minute=6))
+
+
+@pytest.mark.asyncio
+async def test_reset_clears_demo_records_but_keeps_configuration():
+    uow = InMemoryUnitOfWork()
+    now = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    upload = UploadRecord(
+        id="finz-test-upload-reset",
+        original_filename="finz-test.csv",
+        media_type="text/csv",
+        sha256="a" * 64,
+        data=b"amount\n100\n",
+        created_at=now,
+    )
+    context = PipelineContext(
+        id="finz-test-context-reset",
+        upload_id=upload.id,
+        status="ready",
+        transaction_statuses={"finz-test-transaction": "ready"},
+        transfer_pairs={},
+        created_at=now,
+        updated_at=now,
+    )
+    sync_run = SyncRunRecord(
+        id="finz-test-sync-reset",
+        status="complete",
+        item_views={},
+        started_at=now,
+        completed_at=now,
+    )
+    reconciliation_run = ReconciliationRunRecord(
+        id="finz-test-reconciliation-reset",
+        status="complete",
+        account_views={},
+        created_at=now,
+    )
+    connection = QboConnection(
+        realm_id="finz-test-realm",
+        company_name="Finz Test Company",
+        encrypted_access_token="finz-test-access",
+        encrypted_refresh_token="finz-test-refresh",
+        access_expires_at=now.replace(hour=1),
+        refresh_expires_at=now.replace(day=2),
+        updated_at=now,
+    )
+    await uow.uploads.add(upload)
+    await uow.pipeline_contexts.upsert(context)
+    await uow.sync_runs.add(sync_run)
+    await uow.reconciliation_runs.add(reconciliation_run)
+    await uow.raw_records.add(_raw("finz-test-raw-reset"))
+    await uow.transactions.add(
+        _transaction("finz-test-transaction-reset", raw_id="finz-test-raw-reset")
+    )
+    await uow.classifications.append(_decision("finz-test-decision-reset"))
+    await uow.outbox.add(
+        _outbox("finz-test-outbox-reset", "finz-test-outbox-reset-key")
+    )
+    await uow.oauth_states.put(
+        "finz-test-oauth-reset", expires_at=now.replace(hour=1)
+    )
+    await uow.audit.append(AuditEvent("finz-test-event", {}, now))
+    await uow.qbo_connection.upsert(connection)
+    await uow.demo_grants.issue(
+        DemoGrant(
+            token_hash="finz-test-reset-grant",
+            created_at=now,
+            expires_at=now.replace(hour=1),
+        )
+    )
+    await uow.execution_leases.acquire(
+        ExecutionLease(
+            id="finz-test-reset-lease",
+            acquired_at=now,
+            expires_at=now.replace(hour=1),
+        ),
+        now=now,
+    )
+    await uow.demo_reset.add(
+        ResetRun(id="finz-test-reset", status="running", started_at=now)
+    )
+
+    await uow.demo_reset.clear_shared_workspace()
+
+    assert await uow.uploads.get(upload.id) is None
+    assert await uow.pipeline_contexts.get(upload.id) is None
+    assert await uow.sync_runs.get(sync_run.id) is None
+    assert await uow.reconciliation_runs.get(reconciliation_run.id) is None
+    assert await uow.raw_records.get("finz-test-raw-reset") is None
+    assert await uow.transactions.get("finz-test-transaction-reset") is None
+    assert await uow.classifications.latest("tx-1") is None
+    assert await uow.outbox.get("finz-test-outbox-reset") is None
+    assert await uow.oauth_states.consume("finz-test-oauth-reset", now=now) is None
+    assert await uow.audit.list() == ()
+    assert (
+        await uow.demo_grants.consume_valid("finz-test-reset-grant", now=now)
+        is None
+    )
+    assert await uow.qbo_connection.get() == connection
+    assert await uow.execution_leases.acquire(
+        ExecutionLease(
+            id="finz-test-after-reset-lease",
+            acquired_at=now,
+            expires_at=now.replace(hour=1),
+        ),
+        now=now,
+    )
+
+
+@pytest.mark.asyncio
+async def test_upload_bytes_round_trip_without_mutation():
+    uow = InMemoryUnitOfWork()
+    source = bytearray(b"amount\n100\n")
+    upload = UploadRecord(
+        id="finz-test-upload-bytes",
+        original_filename="finz-test.csv",
+        media_type="text/csv",
+        sha256="b" * 64,
+        data=bytes(source),
+        created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+    )
+
+    await uow.uploads.add(upload)
+    source[:] = b"mutated data"
+
+    loaded = await uow.uploads.get(upload.id)
+    assert loaded == upload
+    assert loaded is not None
+    assert loaded.data == b"amount\n100\n"
+    assert isinstance(loaded.data, bytes)

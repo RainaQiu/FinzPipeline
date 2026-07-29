@@ -19,6 +19,16 @@ from app.domain.classification import (
     DecisionSource,
     TransactionType,
 )
+from app.domain.demo import (
+    DemoGrant,
+    ExecutionLease,
+    PipelineContext,
+    QboConnection,
+    ReconciliationRunRecord,
+    ResetRun,
+    SyncRunRecord,
+    UploadRecord,
+)
 from app.domain.transactions import Direction, NormalizedTransaction, RawRecord
 from app.repositories.protocols import (
     AuditEvent,
@@ -102,6 +112,40 @@ def _audit_from_document(document: Mapping[str, object]) -> AuditEvent:
         occurred_at=document["occurred_at"],  # type: ignore[arg-type]
         sequence=int(document["sequence"]),
     )
+
+
+def _upload_from_document(document: Mapping[str, object]) -> UploadRecord:
+    return UploadRecord(**_without_mongo_id(document))  # type: ignore[arg-type]
+
+
+def _pipeline_context_from_document(
+    document: Mapping[str, object],
+) -> PipelineContext:
+    return PipelineContext(**_without_mongo_id(document))  # type: ignore[arg-type]
+
+
+def _sync_run_from_document(document: Mapping[str, object]) -> SyncRunRecord:
+    return SyncRunRecord(**_without_mongo_id(document))  # type: ignore[arg-type]
+
+
+def _reconciliation_run_from_document(
+    document: Mapping[str, object],
+) -> ReconciliationRunRecord:
+    return ReconciliationRunRecord(
+        **_without_mongo_id(document)  # type: ignore[arg-type]
+    )
+
+
+def _demo_grant_from_document(document: Mapping[str, object]) -> DemoGrant:
+    return DemoGrant(**_without_mongo_id(document))  # type: ignore[arg-type]
+
+
+def _qbo_connection_from_document(
+    document: Mapping[str, object],
+) -> QboConnection:
+    values = _without_mongo_id(document)
+    values.pop("singleton", None)
+    return QboConnection(**values)  # type: ignore[arg-type]
 
 
 class _MongoRawRecordRepository:
@@ -414,6 +458,212 @@ class _MongoAuditRepository:
         return tuple([_audit_from_document(item) async for item in cursor])
 
 
+class _MongoUploadRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def add(self, upload: UploadRecord) -> UploadRecord:
+        document = _model_document(upload)
+        document["_id"] = upload.id
+        try:
+            await self._collection.insert_one(document)
+            return upload
+        except DuplicateKeyError:
+            existing = await self.get(upload.id)
+            if existing == upload:
+                return existing
+            raise ImmutableRecordError(f"upload {upload.id!r} is immutable") from None
+
+    async def get(self, upload_id: str) -> UploadRecord | None:
+        document = await self._collection.find_one({"_id": upload_id})
+        return _upload_from_document(document) if document is not None else None
+
+
+class _MongoPipelineContextRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def upsert(self, context: PipelineContext) -> PipelineContext:
+        document = _model_document(context)
+        document["_id"] = context.upload_id
+        await self._collection.replace_one(
+            {"_id": context.upload_id}, document, upsert=True
+        )
+        return context
+
+    async def get(self, upload_id: str) -> PipelineContext | None:
+        document = await self._collection.find_one({"_id": upload_id})
+        return (
+            _pipeline_context_from_document(document)
+            if document is not None
+            else None
+        )
+
+
+class _MongoSyncRunRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def add(self, run: SyncRunRecord) -> SyncRunRecord:
+        document = _model_document(run)
+        document["_id"] = run.id
+        try:
+            await self._collection.insert_one(document)
+            return run
+        except DuplicateKeyError:
+            existing = await self.get(run.id)
+            if existing == run:
+                return existing
+            raise ImmutableRecordError(f"sync run {run.id!r} is immutable") from None
+
+    async def get(self, run_id: str) -> SyncRunRecord | None:
+        document = await self._collection.find_one({"_id": run_id})
+        return _sync_run_from_document(document) if document is not None else None
+
+
+class _MongoReconciliationRunRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def add(self, run: ReconciliationRunRecord) -> ReconciliationRunRecord:
+        document = _model_document(run)
+        document["_id"] = run.id
+        try:
+            await self._collection.insert_one(document)
+            return run
+        except DuplicateKeyError:
+            existing = await self.get(run.id)
+            if existing == run:
+                return existing
+            raise ImmutableRecordError(
+                f"reconciliation run {run.id!r} is immutable"
+            ) from None
+
+    async def get(self, run_id: str) -> ReconciliationRunRecord | None:
+        document = await self._collection.find_one({"_id": run_id})
+        return (
+            _reconciliation_run_from_document(document)
+            if document is not None
+            else None
+        )
+
+
+class _MongoDemoGrantRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def issue(self, grant: DemoGrant) -> DemoGrant:
+        document = _model_document(grant)
+        document["_id"] = grant.token_hash
+        await self._collection.replace_one(
+            {"_id": grant.token_hash}, document, upsert=True
+        )
+        return grant
+
+    async def consume_valid(
+        self, token_hash: str, *, now: datetime
+    ) -> DemoGrant | None:
+        document = await self._collection.find_one_and_delete({"_id": token_hash})
+        if document is None:
+            return None
+        grant = _demo_grant_from_document(document)
+        return grant if grant.expires_at > now else None
+
+
+class _MongoQboConnectionRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def upsert(self, connection: QboConnection) -> QboConnection:
+        document = _model_document(connection)
+        document.update({"_id": "singleton", "singleton": True})
+        await self._collection.replace_one({"_id": "singleton"}, document, upsert=True)
+        return connection
+
+    async def get(self) -> QboConnection | None:
+        document = await self._collection.find_one({"_id": "singleton"})
+        return (
+            _qbo_connection_from_document(document)
+            if document is not None
+            else None
+        )
+
+
+class _MongoExecutionLeaseRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def acquire(self, lease: ExecutionLease, *, now: datetime) -> bool:
+        try:
+            document = await self._collection.find_one_and_update(
+                {
+                    "_id": "active",
+                    "$or": [
+                        {"expires_at": {"$lte": now}},
+                        {"expires_at": {"$exists": False}},
+                    ],
+                },
+                {
+                    "$set": {
+                        "id": lease.id,
+                        "acquired_at": lease.acquired_at,
+                        "expires_at": lease.expires_at,
+                    }
+                },
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
+            )
+        except DuplicateKeyError:
+            return False
+        return document is not None and document.get("id") == lease.id
+
+    async def release(self, lease_id: str) -> None:
+        await self._collection.delete_one({"_id": "active", "id": lease_id})
+
+
+class _MongoDemoResetRepository:
+    _WORKSPACE_COLLECTIONS = (
+        "raw_records",
+        "transactions",
+        "classifications",
+        "outbox",
+        "oauth_states",
+        "audit_events",
+        "counters",
+        "uploads",
+        "pipeline_contexts",
+        "sync_runs",
+        "reconciliation_runs",
+        "demo_grants",
+        "execution_leases",
+        "reset_runs",
+    )
+
+    def __init__(self, database) -> None:
+        self._database = database
+        self._collection = database["reset_runs"]
+
+    async def add(self, run: ResetRun) -> ResetRun:
+        document = _model_document(run)
+        document["_id"] = run.id
+        try:
+            await self._collection.insert_one(document)
+            return run
+        except DuplicateKeyError:
+            existing_document = await self._collection.find_one({"_id": run.id})
+            if existing_document is not None:
+                existing = ResetRun(
+                    **_without_mongo_id(existing_document)  # type: ignore[arg-type]
+                )
+                if existing == run:
+                    return existing
+            raise ImmutableRecordError(f"reset run {run.id!r} is immutable") from None
+
+    async def clear_shared_workspace(self) -> None:
+        for collection_name in self._WORKSPACE_COLLECTIONS:
+            await self._database[collection_name].delete_many({})
+
+
 class MongoUnitOfWork:
     """Mongo-backed unit of work.
 
@@ -440,6 +690,22 @@ class MongoUnitOfWork:
         self.outbox = _MongoOutboxRepository(self._database["outbox"])
         self.oauth_states = _MongoOAuthStateRepository(self._database["oauth_states"])
         self.audit = _MongoAuditRepository(self._database["audit_events"], self._counters)
+        self.uploads = _MongoUploadRepository(self._database["uploads"])
+        self.pipeline_contexts = _MongoPipelineContextRepository(
+            self._database["pipeline_contexts"]
+        )
+        self.sync_runs = _MongoSyncRunRepository(self._database["sync_runs"])
+        self.reconciliation_runs = _MongoReconciliationRunRepository(
+            self._database["reconciliation_runs"]
+        )
+        self.demo_grants = _MongoDemoGrantRepository(self._database["demo_grants"])
+        self.qbo_connection = _MongoQboConnectionRepository(
+            self._database["qbo_connections"]
+        )
+        self.execution_leases = _MongoExecutionLeaseRepository(
+            self._database["execution_leases"]
+        )
+        self.demo_reset = _MongoDemoResetRepository(self._database)
 
     @classmethod
     def from_uri(cls, uri: str, database_name: str) -> "MongoUnitOfWork":
@@ -498,6 +764,34 @@ class MongoUnitOfWork:
         await self._database["audit_events"].create_index(
             [("sequence", ASCENDING)], unique=True, name="sequence_unique"
         )
+        await self._database["uploads"].create_index(
+            [("id", ASCENDING)], unique=True, name="id_unique"
+        )
+        await self._database["pipeline_contexts"].create_index(
+            [("upload_id", ASCENDING)], unique=True, name="upload_id_unique"
+        )
+        await self._database["sync_runs"].create_index(
+            [("id", ASCENDING)], unique=True, name="id_unique"
+        )
+        await self._database["reconciliation_runs"].create_index(
+            [("id", ASCENDING)], unique=True, name="id_unique"
+        )
+        await self._database["demo_grants"].create_index(
+            [("expires_at", ASCENDING)],
+            expireAfterSeconds=0,
+            name="expires_at_ttl",
+        )
+        await self._database["execution_leases"].create_index(
+            [("expires_at", ASCENDING)],
+            expireAfterSeconds=0,
+            name="expires_at_ttl",
+        )
+        await self._database["qbo_connections"].create_index(
+            [("singleton", ASCENDING)], unique=True, name="singleton_unique"
+        )
+        await self._database["reset_runs"].create_index(
+            [("id", ASCENDING)], unique=True, name="id_unique"
+        )
 
     async def index_information(self) -> dict[str, dict[str, dict[str, Any]]]:
         names = (
@@ -507,6 +801,14 @@ class MongoUnitOfWork:
             "outbox",
             "oauth_states",
             "audit_events",
+            "uploads",
+            "pipeline_contexts",
+            "sync_runs",
+            "reconciliation_runs",
+            "demo_grants",
+            "qbo_connections",
+            "execution_leases",
+            "reset_runs",
         )
         return {
             name: await self._database[name].index_information() for name in names

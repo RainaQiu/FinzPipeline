@@ -9,6 +9,16 @@ from hashlib import sha256
 
 from app.domain.accounting import OutboxItem, OutboxStatus
 from app.domain.classification import ClassificationDecision
+from app.domain.demo import (
+    DemoGrant,
+    ExecutionLease,
+    PipelineContext,
+    QboConnection,
+    ReconciliationRunRecord,
+    ResetRun,
+    SyncRunRecord,
+    UploadRecord,
+)
 from app.domain.transactions import NormalizedTransaction, RawRecord
 from app.repositories.protocols import (
     AuditEvent,
@@ -265,6 +275,204 @@ class _InMemoryAuditRepository:
         return events[offset:] if limit is None else events[offset : offset + limit]
 
 
+class _InMemoryUploadRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._records: dict[str, UploadRecord] = {}
+
+    async def add(self, upload: UploadRecord) -> UploadRecord:
+        async with self._lock:
+            existing = self._records.get(upload.id)
+            if existing is None:
+                self._records[upload.id] = upload
+                return upload
+            if existing != upload:
+                raise ImmutableRecordError(f"upload {upload.id!r} is immutable")
+            return existing
+
+    async def get(self, upload_id: str) -> UploadRecord | None:
+        async with self._lock:
+            return self._records.get(upload_id)
+
+
+class _InMemoryPipelineContextRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._records: dict[str, PipelineContext] = {}
+
+    async def upsert(self, context: PipelineContext) -> PipelineContext:
+        async with self._lock:
+            self._records[context.upload_id] = context
+            return context
+
+    async def get(self, upload_id: str) -> PipelineContext | None:
+        async with self._lock:
+            return self._records.get(upload_id)
+
+
+class _InMemorySyncRunRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._records: dict[str, SyncRunRecord] = {}
+
+    async def add(self, run: SyncRunRecord) -> SyncRunRecord:
+        async with self._lock:
+            existing = self._records.get(run.id)
+            if existing is None:
+                self._records[run.id] = run
+                return run
+            if existing != run:
+                raise ImmutableRecordError(f"sync run {run.id!r} is immutable")
+            return existing
+
+    async def get(self, run_id: str) -> SyncRunRecord | None:
+        async with self._lock:
+            return self._records.get(run_id)
+
+
+class _InMemoryReconciliationRunRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._records: dict[str, ReconciliationRunRecord] = {}
+
+    async def add(self, run: ReconciliationRunRecord) -> ReconciliationRunRecord:
+        async with self._lock:
+            existing = self._records.get(run.id)
+            if existing is None:
+                self._records[run.id] = run
+                return run
+            if existing != run:
+                raise ImmutableRecordError(
+                    f"reconciliation run {run.id!r} is immutable"
+                )
+            return existing
+
+    async def get(self, run_id: str) -> ReconciliationRunRecord | None:
+        async with self._lock:
+            return self._records.get(run_id)
+
+
+class _InMemoryDemoGrantRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._records: dict[str, DemoGrant] = {}
+
+    async def issue(self, grant: DemoGrant) -> DemoGrant:
+        async with self._lock:
+            self._records[grant.token_hash] = grant
+            return grant
+
+    async def consume_valid(
+        self, token_hash: str, *, now: datetime
+    ) -> DemoGrant | None:
+        async with self._lock:
+            grant = self._records.pop(token_hash, None)
+            if grant is None or grant.expires_at <= now:
+                return None
+            return grant
+
+
+class _InMemoryQboConnectionRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._connection: QboConnection | None = None
+
+    async def upsert(self, connection: QboConnection) -> QboConnection:
+        async with self._lock:
+            self._connection = connection
+            return connection
+
+    async def get(self) -> QboConnection | None:
+        async with self._lock:
+            return self._connection
+
+
+class _InMemoryExecutionLeaseRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._active: ExecutionLease | None = None
+
+    async def acquire(self, lease: ExecutionLease, *, now: datetime) -> bool:
+        async with self._lock:
+            if self._active is not None and self._active.expires_at > now:
+                return False
+            self._active = lease
+            return True
+
+    async def release(self, lease_id: str) -> None:
+        async with self._lock:
+            if self._active is not None and self._active.id == lease_id:
+                self._active = None
+
+
+class _InMemoryDemoResetRepository:
+    def __init__(
+        self,
+        lock: asyncio.Lock,
+        *,
+        raw_records: _InMemoryRawRecordRepository,
+        transactions: _InMemoryTransactionRepository,
+        classifications: _InMemoryClassificationRepository,
+        outbox: _InMemoryOutboxRepository,
+        oauth_states: _InMemoryOAuthStateRepository,
+        audit: _InMemoryAuditRepository,
+        uploads: _InMemoryUploadRepository,
+        pipeline_contexts: _InMemoryPipelineContextRepository,
+        sync_runs: _InMemorySyncRunRepository,
+        reconciliation_runs: _InMemoryReconciliationRunRepository,
+        demo_grants: _InMemoryDemoGrantRepository,
+        execution_leases: _InMemoryExecutionLeaseRepository,
+    ) -> None:
+        self._lock = lock
+        self._records: dict[str, ResetRun] = {}
+        self._raw_records = raw_records
+        self._transactions = transactions
+        self._classifications = classifications
+        self._outbox = outbox
+        self._oauth_states = oauth_states
+        self._audit = audit
+        self._uploads = uploads
+        self._pipeline_contexts = pipeline_contexts
+        self._sync_runs = sync_runs
+        self._reconciliation_runs = reconciliation_runs
+        self._demo_grants = demo_grants
+        self._execution_leases = execution_leases
+
+    async def add(self, run: ResetRun) -> ResetRun:
+        async with self._lock:
+            existing = self._records.get(run.id)
+            if existing is None:
+                self._records[run.id] = run
+                return run
+            if existing != run:
+                raise ImmutableRecordError(f"reset run {run.id!r} is immutable")
+            return existing
+
+    async def clear_shared_workspace(self) -> None:
+        async with self._lock:
+            self._uploads._records.clear()
+            self._pipeline_contexts._records.clear()
+            self._sync_runs._records.clear()
+            self._reconciliation_runs._records.clear()
+            self._demo_grants._records.clear()
+            self._execution_leases._active = None
+            self._records.clear()
+            async with self._raw_records._lock:
+                self._raw_records._records.clear()
+            async with self._transactions._lock:
+                self._transactions._transactions.clear()
+            async with self._classifications._lock:
+                self._classifications._by_id.clear()
+                self._classifications._by_transaction.clear()
+            async with self._outbox._lock:
+                self._outbox._by_id.clear()
+                self._outbox._by_key.clear()
+            async with self._oauth_states._lock:
+                self._oauth_states._states.clear()
+            async with self._audit._lock:
+                self._audit._events.clear()
+
+
 class InMemoryUnitOfWork:
     """A process-local unit of work with shared locks for atomic operations."""
 
@@ -275,12 +483,37 @@ class InMemoryUnitOfWork:
         self._outbox_lock = asyncio.Lock()
         self._oauth_state_lock = asyncio.Lock()
         self._audit_lock = asyncio.Lock()
+        self._demo_lock = asyncio.Lock()
         self.raw_records = _InMemoryRawRecordRepository(self._raw_lock)
         self.transactions = _InMemoryTransactionRepository(self._transaction_lock)
         self.classifications = _InMemoryClassificationRepository(self._classification_lock)
         self.outbox = _InMemoryOutboxRepository(self._outbox_lock)
         self.oauth_states = _InMemoryOAuthStateRepository(self._oauth_state_lock)
         self.audit = _InMemoryAuditRepository(self._audit_lock)
+        self.uploads = _InMemoryUploadRepository(self._demo_lock)
+        self.pipeline_contexts = _InMemoryPipelineContextRepository(self._demo_lock)
+        self.sync_runs = _InMemorySyncRunRepository(self._demo_lock)
+        self.reconciliation_runs = _InMemoryReconciliationRunRepository(
+            self._demo_lock
+        )
+        self.demo_grants = _InMemoryDemoGrantRepository(self._demo_lock)
+        self.qbo_connection = _InMemoryQboConnectionRepository(self._demo_lock)
+        self.execution_leases = _InMemoryExecutionLeaseRepository(self._demo_lock)
+        self.demo_reset = _InMemoryDemoResetRepository(
+            self._demo_lock,
+            raw_records=self.raw_records,
+            transactions=self.transactions,
+            classifications=self.classifications,
+            outbox=self.outbox,
+            oauth_states=self.oauth_states,
+            audit=self.audit,
+            uploads=self.uploads,
+            pipeline_contexts=self.pipeline_contexts,
+            sync_runs=self.sync_runs,
+            reconciliation_runs=self.reconciliation_runs,
+            demo_grants=self.demo_grants,
+            execution_leases=self.execution_leases,
+        )
 
     async def __aenter__(self) -> "InMemoryUnitOfWork":
         return self

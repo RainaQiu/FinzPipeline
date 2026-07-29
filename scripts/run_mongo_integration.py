@@ -41,6 +41,7 @@ def main() -> int:
             [
                 "tests/integration/test_mongo_repositories.py",
                 "tests/integration/test_mongo_persistence.py",
+                "tests/integration/test_mongo_cloud_repositories.py",
             ]
         )
     command.append("-q")
