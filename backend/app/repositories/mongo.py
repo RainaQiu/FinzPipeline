@@ -594,6 +594,8 @@ class _MongoExecutionLeaseRepository:
         self._collection = collection
 
     async def acquire(self, lease: ExecutionLease, *, now: datetime) -> bool:
+        if not (lease.acquired_at <= now < lease.expires_at):
+            return False
         try:
             document = await self._collection.find_one_and_update(
                 {

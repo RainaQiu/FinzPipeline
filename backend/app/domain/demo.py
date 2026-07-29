@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Mapping
 
 from app.domain.transactions import _freeze_value, _require_int
 
 
-def _require_aware_datetime(value: datetime, field_name: str) -> None:
+def _canonical_datetime(value: datetime, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")
+    utc_value = value.astimezone(timezone.utc)
+    return utc_value.replace(microsecond=utc_value.microsecond // 1000 * 1000)
 
 
 def _freeze_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
@@ -38,9 +40,15 @@ class UploadRecord:
             raise TypeError("data must be immutable bytes")
         _require_int(self.mapping_version, "mapping_version")
         _require_int(self.row_count, "row_count")
-        _require_aware_datetime(self.created_at, "created_at")
+        object.__setattr__(
+            self, "created_at", _canonical_datetime(self.created_at, "created_at")
+        )
         if self.completed_at is not None:
-            _require_aware_datetime(self.completed_at, "completed_at")
+            object.__setattr__(
+                self,
+                "completed_at",
+                _canonical_datetime(self.completed_at, "completed_at"),
+            )
         if not all(isinstance(error, str) for error in self.error_summary):
             raise TypeError("error_summary items must be strings")
         object.__setattr__(self, "error_summary", tuple(self.error_summary))
@@ -57,8 +65,12 @@ class PipelineContext:
     updated_at: datetime
 
     def __post_init__(self) -> None:
-        _require_aware_datetime(self.created_at, "created_at")
-        _require_aware_datetime(self.updated_at, "updated_at")
+        object.__setattr__(
+            self, "created_at", _canonical_datetime(self.created_at, "created_at")
+        )
+        object.__setattr__(
+            self, "updated_at", _canonical_datetime(self.updated_at, "updated_at")
+        )
         object.__setattr__(self, "transaction_statuses", _freeze_mapping(self.transaction_statuses))
         object.__setattr__(self, "transfer_pairs", _freeze_mapping(self.transfer_pairs))
 
@@ -72,9 +84,15 @@ class SyncRunRecord:
     completed_at: datetime | None = None
 
     def __post_init__(self) -> None:
-        _require_aware_datetime(self.started_at, "started_at")
+        object.__setattr__(
+            self, "started_at", _canonical_datetime(self.started_at, "started_at")
+        )
         if self.completed_at is not None:
-            _require_aware_datetime(self.completed_at, "completed_at")
+            object.__setattr__(
+                self,
+                "completed_at",
+                _canonical_datetime(self.completed_at, "completed_at"),
+            )
         object.__setattr__(self, "item_views", _freeze_mapping(self.item_views))
 
 
@@ -86,7 +104,9 @@ class ReconciliationRunRecord:
     created_at: datetime
 
     def __post_init__(self) -> None:
-        _require_aware_datetime(self.created_at, "created_at")
+        object.__setattr__(
+            self, "created_at", _canonical_datetime(self.created_at, "created_at")
+        )
         object.__setattr__(self, "account_views", _freeze_mapping(self.account_views))
 
 
@@ -97,8 +117,12 @@ class DemoGrant:
     created_at: datetime
 
     def __post_init__(self) -> None:
-        _require_aware_datetime(self.expires_at, "expires_at")
-        _require_aware_datetime(self.created_at, "created_at")
+        object.__setattr__(
+            self, "expires_at", _canonical_datetime(self.expires_at, "expires_at")
+        )
+        object.__setattr__(
+            self, "created_at", _canonical_datetime(self.created_at, "created_at")
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,9 +136,19 @@ class QboConnection:
     updated_at: datetime
 
     def __post_init__(self) -> None:
-        _require_aware_datetime(self.access_expires_at, "access_expires_at")
-        _require_aware_datetime(self.refresh_expires_at, "refresh_expires_at")
-        _require_aware_datetime(self.updated_at, "updated_at")
+        object.__setattr__(
+            self,
+            "access_expires_at",
+            _canonical_datetime(self.access_expires_at, "access_expires_at"),
+        )
+        object.__setattr__(
+            self,
+            "refresh_expires_at",
+            _canonical_datetime(self.refresh_expires_at, "refresh_expires_at"),
+        )
+        object.__setattr__(
+            self, "updated_at", _canonical_datetime(self.updated_at, "updated_at")
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,8 +158,14 @@ class ExecutionLease:
     expires_at: datetime
 
     def __post_init__(self) -> None:
-        _require_aware_datetime(self.acquired_at, "acquired_at")
-        _require_aware_datetime(self.expires_at, "expires_at")
+        object.__setattr__(
+            self,
+            "acquired_at",
+            _canonical_datetime(self.acquired_at, "acquired_at"),
+        )
+        object.__setattr__(
+            self, "expires_at", _canonical_datetime(self.expires_at, "expires_at")
+        )
         if self.expires_at <= self.acquired_at:
             raise ValueError("expires_at must be after acquired_at")
 
@@ -138,6 +178,12 @@ class ResetRun:
     completed_at: datetime | None = None
 
     def __post_init__(self) -> None:
-        _require_aware_datetime(self.started_at, "started_at")
+        object.__setattr__(
+            self, "started_at", _canonical_datetime(self.started_at, "started_at")
+        )
         if self.completed_at is not None:
-            _require_aware_datetime(self.completed_at, "completed_at")
+            object.__setattr__(
+                self,
+                "completed_at",
+                _canonical_datetime(self.completed_at, "completed_at"),
+            )

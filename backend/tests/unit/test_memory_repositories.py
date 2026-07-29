@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -269,6 +269,39 @@ async def test_only_one_execution_lease_can_be_active():
     )
     await uow.execution_leases.release(replacement.id)
     assert await uow.execution_leases.acquire(replacement, now=now.replace(minute=6))
+
+
+@pytest.mark.asyncio
+async def test_concurrent_expired_candidate_leases_are_all_rejected():
+    uow = InMemoryUnitOfWork()
+    now = datetime(2026, 4, 1, 12, tzinfo=timezone.utc)
+    candidates = tuple(
+        ExecutionLease(
+            id=f"finz-test-stale-lease-{index}",
+            acquired_at=now - timedelta(minutes=2),
+            expires_at=now - timedelta(minutes=1),
+        )
+        for index in range(8)
+    )
+
+    acquired = await asyncio.gather(
+        *(uow.execution_leases.acquire(lease, now=now) for lease in candidates)
+    )
+
+    assert acquired == [False] * 8
+
+
+@pytest.mark.asyncio
+async def test_not_yet_acquired_candidate_lease_is_rejected():
+    uow = InMemoryUnitOfWork()
+    now = datetime(2026, 4, 1, 12, tzinfo=timezone.utc)
+    candidate = ExecutionLease(
+        id="finz-test-future-lease",
+        acquired_at=now + timedelta(minutes=1),
+        expires_at=now + timedelta(minutes=2),
+    )
+
+    assert await uow.execution_leases.acquire(candidate, now=now) is False
 
 
 @pytest.mark.asyncio
