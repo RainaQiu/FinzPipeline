@@ -431,3 +431,67 @@ async def test_upload_bytes_round_trip_without_mutation():
     assert loaded is not None
     assert loaded.data == b"amount\n100\n"
     assert isinstance(loaded.data, bytes)
+
+
+@pytest.mark.asyncio
+async def test_upload_status_update_preserves_immutable_source_fields():
+    uow = InMemoryUnitOfWork()
+    upload = UploadRecord(
+        id="finz-test-upload-status",
+        original_filename="finz-test.csv",
+        media_type="text/csv",
+        sha256="c" * 64,
+        data=b"amount\n100\n",
+        created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+    )
+    await uow.uploads.add(upload)
+    completed = replace(
+        upload,
+        status="completed",
+        mapping_version=1,
+        row_count=1,
+        completed_at=datetime(2026, 4, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert await uow.uploads.update_status(completed) == completed
+    assert await uow.uploads.get(upload.id) == completed
+
+    for tampered in (
+        replace(completed, data=b"amount\n999\n"),
+        replace(completed, sha256="d" * 64),
+        replace(completed, original_filename="other.csv"),
+        replace(completed, media_type="application/csv"),
+        replace(completed, created_at=datetime(2026, 4, 2, tzinfo=timezone.utc)),
+    ):
+        with pytest.raises(ImmutableRecordError):
+            await uow.uploads.update_status(tampered)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_context_is_retrievable_by_exact_transaction_id():
+    uow = InMemoryUnitOfWork()
+    now = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    context = PipelineContext(
+        id="finz-test-context-transaction",
+        upload_id="finz-test-upload-transaction",
+        status="completed",
+        transaction_statuses={
+            "finz-test.transaction.$literal": {"duplicate_status": "canonical"},
+            "finz-test-other-transaction": {"duplicate_status": "unique"},
+        },
+        transfer_pairs={},
+        created_at=now,
+        updated_at=now,
+    )
+    await uow.pipeline_contexts.upsert(context)
+
+    assert (
+        await uow.pipeline_contexts.get_for_transaction(
+            "finz-test.transaction.$literal"
+        )
+        == context
+    )
+    assert (
+        await uow.pipeline_contexts.get_for_transaction("finz-test-missing")
+        is None
+    )

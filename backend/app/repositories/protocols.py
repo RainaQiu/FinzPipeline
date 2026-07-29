@@ -135,11 +135,17 @@ class UploadRepository(Protocol):
 
     async def get(self, upload_id: str) -> UploadRecord | None: ...
 
+    async def update_status(self, upload: UploadRecord) -> UploadRecord: ...
+
 
 class PipelineContextRepository(Protocol):
     async def upsert(self, context: PipelineContext) -> PipelineContext: ...
 
     async def get(self, upload_id: str) -> PipelineContext | None: ...
+
+    async def get_for_transaction(
+        self, transaction_id: str
+    ) -> PipelineContext | None: ...
 
 
 class SyncRunRepository(Protocol):

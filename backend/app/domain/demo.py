@@ -63,6 +63,7 @@ class PipelineContext:
     transfer_pairs: Mapping[str, object]
     created_at: datetime
     updated_at: datetime
+    counts: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -73,6 +74,15 @@ class PipelineContext:
         )
         object.__setattr__(self, "transaction_statuses", _freeze_mapping(self.transaction_statuses))
         object.__setattr__(self, "transfer_pairs", _freeze_mapping(self.transfer_pairs))
+        validated_counts: dict[str, int] = {}
+        for key, value in self.counts.items():
+            if not isinstance(key, str):
+                raise TypeError("counts keys must be strings")
+            _require_int(value, f"counts[{key!r}]")
+            if value < 0:
+                raise ValueError("counts values must not be negative")
+            validated_counts[key] = value
+        object.__setattr__(self, "counts", MappingProxyType(validated_counts))
 
 
 @dataclass(frozen=True, slots=True)

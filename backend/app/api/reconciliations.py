@@ -38,7 +38,7 @@ async def get_reconciliation(
     run_id: str,
     service: LedgerBridgeService = Depends(get_ledger_bridge),
 ) -> dict[str, object]:
-    return service.get_reconciliation(run_id)
+    return await service.get_reconciliation(run_id)
 
 
 @router.get("/{run_id}/differences")
@@ -46,7 +46,7 @@ async def get_differences(
     run_id: str,
     service: LedgerBridgeService = Depends(get_ledger_bridge),
 ) -> dict[str, object]:
-    run = service.get_reconciliation(run_id)
+    run = await service.get_reconciliation(run_id)
     return {
         "id": run_id,
         "items": [

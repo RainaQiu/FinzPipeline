@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from hashlib import sha256
 from typing import Mapping
@@ -13,6 +13,12 @@ from app.domain.classification import (
     ClassificationDecision,
     DecisionSource,
     TransactionType,
+)
+from app.domain.demo import (
+    PipelineContext,
+    ReconciliationRunRecord,
+    SyncRunRecord,
+    UploadRecord,
 )
 from app.repositories.protocols import AuditEvent, UnitOfWork
 from app.services.classification import (
@@ -71,29 +77,11 @@ class InvalidReconciliationError(LedgerBridgeError):
     status_code = 422
 
 
-@dataclass(slots=True)
-class _Upload:
-    id: str
-    filename: str
-    media_type: str
-    data: bytes
-    sha256: str
-    status: str
-    created_at: datetime
-    result: dict[str, object] | None = None
-
-
 class LedgerBridgeService:
     """Coordinate domain services and repositories without transport concerns."""
 
     def __init__(self, unit_of_work: UnitOfWork) -> None:
         self.unit_of_work = unit_of_work
-        self._uploads: dict[str, _Upload] = {}
-        self._duplicate_status: dict[str, str] = {}
-        self._transfer_pair_by_transaction: dict[str, str] = {}
-        self._transfer_sync_context: dict[str, dict[str, object]] = {}
-        self._sync_runs: dict[str, dict[str, object]] = {}
-        self._reconciliation_runs: dict[str, dict[str, object]] = {}
 
     async def create_upload(
         self, *, filename: str, media_type: str, data: bytes
@@ -123,34 +111,43 @@ class LedgerBridgeService:
                 details={"max_bytes": MAX_FILE_BYTES},
             )
         upload_id = uuid4().hex
-        upload = _Upload(
+        upload = UploadRecord(
             id=upload_id,
-            filename=filename,
+            original_filename=filename,
             media_type=normalized_media_type,
             data=bytes(data),
             sha256=sha256(data).hexdigest(),
-            status="uploaded",
             created_at=datetime.now(timezone.utc),
         )
-        self._uploads[upload_id] = upload
-        await self._append_audit(
-            "upload.created",
-            {"upload_id": upload_id, "sha256": upload.sha256},
-        )
+        async with self.unit_of_work as uow:
+            await uow.uploads.add(upload)
+            await uow.audit.append(
+                AuditEvent(
+                    "upload.created",
+                    {"upload_id": upload_id, "sha256": upload.sha256},
+                    datetime.now(timezone.utc),
+                )
+            )
         return self._upload_view(upload)
 
     async def get_upload(self, upload_id: str) -> dict[str, object]:
-        return self._upload_view(self._require_upload(upload_id))
+        async with self.unit_of_work as uow:
+            upload = await self._require_upload(uow, upload_id)
+            context = await uow.pipeline_contexts.get(upload_id)
+        return self._upload_view(upload, context)
 
     async def process_upload(
         self, upload_id: str, mapping: IngestionMapping
     ) -> dict[str, object]:
-        upload = self._require_upload(upload_id)
+        async with self.unit_of_work as uow:
+            upload = await self._require_upload(uow, upload_id)
         if upload.status == "completed":
             raise InvalidStateError("The upload has already been processed.")
-        upload.status = "processing"
+        upload = replace(upload, status="processing")
+        async with self.unit_of_work as uow:
+            await uow.uploads.update_status(upload)
         try:
-            batch = ingest_rows(upload.data, upload.filename, mapping)
+            batch = ingest_rows(upload.data, upload.original_filename, mapping)
             normalized = tuple(
                 result.transaction
                 for result in batch.normalization_results
@@ -158,34 +155,30 @@ class LedgerBridgeService:
             )
             deduplication = deduplicate(normalized)
             transfers = match_transfers(deduplication.canonical_transactions)
-            self._duplicate_status.update(
-                {
-                    transaction_id: status.value
-                    for transaction_id, status in deduplication.status_by_id.items()
-                }
-            )
-            self._transfer_pair_by_transaction.update(
-                {
-                    transaction_id: pair.id
-                    for pair in transfers.pairs
-                    for transaction_id in pair.transaction_ids
-                }
-            )
             transactions_by_id = {
                 transaction.id: transaction
                 for transaction in deduplication.canonical_transactions
             }
-            self._transfer_sync_context.update(
-                {
-                    pair.outflow_transaction_id: {
-                        "id": pair.id,
-                        "paired_transaction": transactions_by_id[
-                            pair.inflow_transaction_id
-                        ],
-                    }
-                    for pair in transfers.pairs
+            transaction_statuses = {
+                transaction.id: {
+                    "duplicate_status": deduplication.status_by_id[
+                        transaction.id
+                    ].value
                 }
-            )
+                for transaction in deduplication.canonical_transactions
+            }
+            transfer_pairs = {
+                pair.id: {
+                    "id": pair.id,
+                    "transaction_ids": list(pair.transaction_ids),
+                    "outflow_transaction_id": pair.outflow_transaction_id,
+                    "inflow_transaction_id": pair.inflow_transaction_id,
+                    "paired_transaction": self._sync_transaction_view(
+                        transactions_by_id[pair.inflow_transaction_id]
+                    ),
+                }
+                for pair in transfers.pairs
+            }
             transfer_ids = frozenset(
                 transaction_id
                 for pair in transfers.pairs
@@ -221,6 +214,24 @@ class LedgerBridgeService:
                 "transfer_pairs": len(transfers.pairs),
                 "classified": len(decisions),
             }
+            completed_at = datetime.now(timezone.utc)
+            context = PipelineContext(
+                id=uuid4().hex,
+                upload_id=upload.id,
+                status="completed",
+                transaction_statuses=transaction_statuses,
+                transfer_pairs=transfer_pairs,
+                counts=counts,
+                created_at=upload.created_at,
+                updated_at=completed_at,
+            )
+            completed_upload = replace(
+                upload,
+                status="completed",
+                mapping_version=1,
+                row_count=len(batch.raw_records),
+                completed_at=completed_at,
+            )
             async with self.unit_of_work as uow:
                 for raw_record in batch.raw_records:
                     await uow.raw_records.add(raw_record)
@@ -228,6 +239,8 @@ class LedgerBridgeService:
                     await uow.transactions.add(transaction)
                 for decision in decisions:
                     await uow.classifications.append(decision)
+                await uow.pipeline_contexts.upsert(context)
+                await uow.uploads.update_status(completed_upload)
                 await uow.audit.append(
                     AuditEvent(
                         "upload.processed",
@@ -235,11 +248,17 @@ class LedgerBridgeService:
                         datetime.now(timezone.utc),
                     )
                 )
-            upload.status = "completed"
-            upload.result = {"counts": counts}
-            return {"id": upload.id, "status": upload.status, "counts": counts}
-        except Exception:
-            upload.status = "failed"
+            return {"id": upload.id, "status": completed_upload.status, "counts": counts}
+        except Exception as error:
+            async with self.unit_of_work as uow:
+                await uow.uploads.update_status(
+                    replace(
+                        upload,
+                        status="failed",
+                        completed_at=datetime.now(timezone.utc),
+                        error_summary=(type(error).__name__,),
+                    )
+                )
             raise
 
     async def list_transactions(
@@ -267,7 +286,10 @@ class LedgerBridgeService:
                     continue
                 if account and decision.account_number != account:
                     continue
-                duplicate_status = self._duplicate_status.get(transaction.id, "unique")
+                context = await uow.pipeline_contexts.get_for_transaction(
+                    transaction.id
+                )
+                duplicate_status = self._duplicate_status(context, transaction.id)
                 if duplicate and duplicate_status != duplicate:
                     continue
                 item_risk = "high" if decision.needs_review else "low"
@@ -299,10 +321,11 @@ class LedgerBridgeService:
             if transaction is None:
                 raise ResourceNotFoundError("Transaction not found.")
             decision = await uow.classifications.latest(transaction_id)
+            context = await uow.pipeline_contexts.get_for_transaction(transaction_id)
         return self._transaction_view(
             transaction,
             decision,
-            duplicate_status=self._duplicate_status.get(transaction_id, "unique"),
+            duplicate_status=self._duplicate_status(context, transaction_id),
             risk="high" if decision is not None and decision.needs_review else "low",
         )
 
@@ -313,13 +336,14 @@ class LedgerBridgeService:
                 raise ResourceNotFoundError("Transaction not found.")
             raw = await uow.raw_records.get(transaction.raw_record_id)
             history = await uow.classifications.history(transaction_id)
+            context = await uow.pipeline_contexts.get_for_transaction(transaction_id)
         return {
             "transaction_id": transaction_id,
             "raw_record": self._raw_view(raw) if raw is not None else None,
             "classification_history": [
                 self._decision_view(decision) for decision in history
             ],
-            "transfer_pair_id": self._transfer_pair_by_transaction.get(transaction_id),
+            "transfer_pair_id": self._transfer_pair_id(context, transaction_id),
         }
 
     async def approve_transaction(self, transaction_id: str) -> dict[str, object]:
@@ -465,7 +489,12 @@ class LedgerBridgeService:
                 if decision is None or decision.approval_status is not ApprovalStatus.APPROVED:
                     continue
                 if decision.transaction_type is TransactionType.TRANSFER:
-                    transfer_context = self._transfer_sync_context.get(transaction.id)
+                    context = await uow.pipeline_contexts.get_for_transaction(
+                        transaction.id
+                    )
+                    transfer_context = self._transfer_sync_context(
+                        context, transaction.id
+                    )
                     if transfer_context is None:
                         continue
                     candidates.append(
@@ -478,26 +507,36 @@ class LedgerBridgeService:
                     continue
                 candidates.append(SyncCandidate(transaction=transaction, approved=decision))
             items = await plan_sync(tuple(candidates), realm_id, uow)
-        run_id = uuid4().hex
-        run = {
-            "id": run_id,
-            "status": "planned",
-            "planned_items": len(items),
-            "item_ids": [item.id for item in items],
-            "execution_authorized": False,
-        }
-        self._sync_runs[run_id] = run
-        await self._append_audit(
-            "qbo.sync_planned",
-            {"run_id": run_id, "planned_items": len(items)},
-        )
+            run_id = uuid4().hex
+            run = {
+                "id": run_id,
+                "status": "planned",
+                "planned_items": len(items),
+                "item_ids": [item.id for item in items],
+                "execution_authorized": False,
+            }
+            record = SyncRunRecord(
+                id=run_id,
+                status="planned",
+                item_views={"view": run},
+                started_at=datetime.now(timezone.utc),
+            )
+            await uow.sync_runs.add(record)
+            await uow.audit.append(
+                AuditEvent(
+                    "qbo.sync_planned",
+                    {"run_id": run_id, "planned_items": len(items)},
+                    datetime.now(timezone.utc),
+                )
+            )
         return run
 
-    def get_sync_run(self, run_id: str) -> dict[str, object]:
-        run = self._sync_runs.get(run_id)
-        if run is None:
+    async def get_sync_run(self, run_id: str) -> dict[str, object]:
+        async with self.unit_of_work as uow:
+            record = await uow.sync_runs.get(run_id)
+        if record is None:
             raise ResourceNotFoundError("Sync run not found.")
-        return run
+        return self._mutable_view(record.item_views["view"])
 
     async def reconcile_local(
         self,
@@ -537,31 +576,35 @@ class LedgerBridgeService:
             ],
             "internal_totals": internal_view["totals"],
         }
-        self._reconciliation_runs[run_id] = view
-        await self._append_audit(
-            "reconciliation.completed",
-            {
-                "run_id": run_id,
-                "status": result.status.value,
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-            },
-        )
+        async with self.unit_of_work as uow:
+            await uow.reconciliation_runs.add(
+                ReconciliationRunRecord(
+                    id=run_id,
+                    status=result.status.value,
+                    account_views={"view": view},
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+            await uow.audit.append(
+                AuditEvent(
+                    "reconciliation.completed",
+                    {
+                        "run_id": run_id,
+                        "status": result.status.value,
+                        "start_date": start_date.isoformat(),
+                        "end_date": end_date.isoformat(),
+                    },
+                    datetime.now(timezone.utc),
+                )
+            )
         return view
 
-    async def _append_audit(
-        self, event_type: str, payload: Mapping[str, object]
-    ) -> None:
+    async def get_reconciliation(self, run_id: str) -> dict[str, object]:
         async with self.unit_of_work as uow:
-            await uow.audit.append(
-                AuditEvent(event_type, payload, datetime.now(timezone.utc))
-            )
-
-    def get_reconciliation(self, run_id: str) -> dict[str, object]:
-        run = self._reconciliation_runs.get(run_id)
-        if run is None:
+            record = await uow.reconciliation_runs.get(run_id)
+        if record is None:
             raise ResourceNotFoundError("Reconciliation not found.")
-        return run
+        return self._mutable_view(record.account_views["view"])
 
     async def _build_pnl_domain(self, start_date: date, end_date: date):
         async with self.unit_of_work as uow:
@@ -583,11 +626,69 @@ class LedgerBridgeService:
             end_date,
         )
 
-    def _require_upload(self, upload_id: str) -> _Upload:
-        upload = self._uploads.get(upload_id)
+    @staticmethod
+    async def _require_upload(uow: UnitOfWork, upload_id: str) -> UploadRecord:
+        upload = await uow.uploads.get(upload_id)
         if upload is None:
             raise ResourceNotFoundError("Upload not found.")
         return upload
+
+    @staticmethod
+    def _duplicate_status(
+        context: PipelineContext | None, transaction_id: str
+    ) -> str:
+        if context is None:
+            return "unique"
+        status = context.transaction_statuses.get(transaction_id)
+        if not isinstance(status, Mapping):
+            return "unique"
+        return str(status.get("duplicate_status", "unique"))
+
+    @staticmethod
+    def _transfer_pair(
+        context: PipelineContext | None, transaction_id: str
+    ) -> Mapping[str, object] | None:
+        if context is None:
+            return None
+        for pair in context.transfer_pairs.values():
+            if (
+                isinstance(pair, Mapping)
+                and transaction_id in pair.get("transaction_ids", ())
+            ):
+                return pair
+        return None
+
+    @classmethod
+    def _transfer_pair_id(
+        cls, context: PipelineContext | None, transaction_id: str
+    ) -> str | None:
+        pair = cls._transfer_pair(context, transaction_id)
+        return str(pair["id"]) if pair is not None else None
+
+    @classmethod
+    def _transfer_sync_context(
+        cls, context: PipelineContext | None, transaction_id: str
+    ) -> Mapping[str, object] | None:
+        pair = cls._transfer_pair(context, transaction_id)
+        if pair is None or pair.get("outflow_transaction_id") != transaction_id:
+            return None
+        return pair
+
+    @staticmethod
+    def _sync_transaction_view(transaction) -> dict[str, object]:
+        return {
+            "id": transaction.id,
+            "amount_minor": transaction.amount_minor,
+            "bank_account_number": transaction.bank_account_number,
+        }
+
+    @classmethod
+    def _mutable_view(cls, value):
+        if isinstance(value, Mapping):
+            return {key: cls._mutable_view(item) for key, item in value.items()}
+        if isinstance(value, tuple):
+            return [cls._mutable_view(item) for item in value]
+        return value
 
     @staticmethod
     def _decision_view(decision: ClassificationDecision) -> dict[str, object]:
@@ -677,16 +778,18 @@ class LedgerBridgeService:
         }
 
     @staticmethod
-    def _upload_view(upload: _Upload) -> dict[str, object]:
+    def _upload_view(
+        upload: UploadRecord, context: PipelineContext | None = None
+    ) -> dict[str, object]:
         view: dict[str, object] = {
             "id": upload.id,
-            "filename": upload.filename,
+            "filename": upload.original_filename,
             "media_type": upload.media_type,
             "sha256": upload.sha256,
             "size_bytes": len(upload.data),
             "status": upload.status,
             "created_at": upload.created_at.isoformat(),
         }
-        if upload.result is not None:
-            view.update(upload.result)
+        if context is not None and context.counts:
+            view["counts"] = dict(context.counts)
         return view

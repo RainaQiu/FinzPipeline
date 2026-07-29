@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -28,7 +29,7 @@ from app.domain.demo import (
 )
 from app.domain.transactions import Direction, NormalizedTransaction, RawRecord
 from app.repositories.mongo import MongoUnitOfWork
-from app.repositories.protocols import AuditEvent
+from app.repositories.protocols import AuditEvent, ImmutableRecordError
 
 
 pytestmark = [
@@ -102,6 +103,7 @@ async def test_cloud_repository_indexes_enforce_expiry_and_uniqueness(mongo_uow)
     assert indexes["execution_leases"]["expires_at_ttl"]["expireAfterSeconds"] == 0
     assert indexes["oauth_states"]["expires_at_ttl"]["expireAfterSeconds"] == 0
     assert indexes["uploads"]["id_unique"]["unique"] is True
+    assert "transaction_ids" in indexes["pipeline_contexts"]
     assert indexes["sync_runs"]["id_unique"]["unique"] is True
     assert indexes["reconciliation_runs"]["id_unique"]["unique"] is True
     assert indexes["qbo_connections"]["singleton_unique"]["unique"] is True
@@ -277,6 +279,55 @@ async def test_upload_bytes_round_trip_and_orchestration_records_persist(mongo_u
         == reconciliation_run
     )
     assert await mongo_uow.qbo_connection.get() == connection
+
+
+async def test_upload_status_update_and_transaction_context_lookup_are_safe(mongo_uow):
+    upload = _upload("finz-test-upload-status")
+    await mongo_uow.uploads.add(upload)
+    completed = replace(
+        upload,
+        status="completed",
+        mapping_version=1,
+        row_count=2,
+        completed_at=datetime(2026, 4, 1, 1, tzinfo=timezone.utc),
+    )
+    context = PipelineContext(
+        id="finz-test-context-transaction",
+        upload_id=upload.id,
+        status="completed",
+        transaction_statuses={
+            "finz-test.transaction.$literal": {"duplicate_status": "canonical"},
+            "finz-test-other-transaction": {"duplicate_status": "unique"},
+        },
+        transfer_pairs={},
+        created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+    )
+
+    assert await mongo_uow.uploads.update_status(completed) == completed
+    assert await mongo_uow.uploads.get(upload.id) == completed
+    with pytest.raises(ImmutableRecordError):
+        await mongo_uow.uploads.update_status(
+            replace(completed, data=b"amount\n999\n")
+        )
+
+    await mongo_uow.pipeline_contexts.upsert(context)
+    assert (
+        await mongo_uow.pipeline_contexts.get_for_transaction(
+            "finz-test.transaction.$literal"
+        )
+        == context
+    )
+    stored = await mongo_uow._database["pipeline_contexts"].find_one(
+        {"_id": context.upload_id}
+    )
+    assert stored["transaction_ids"] == sorted(context.transaction_statuses)
+    assert (
+        await mongo_uow.pipeline_contexts.get_for_transaction(
+            "finz-test.transaction"
+        )
+        is None
+    )
 
 
 async def test_scoped_reset_clears_demo_records_but_keeps_qbo_connection(mongo_uow):

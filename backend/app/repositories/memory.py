@@ -294,6 +294,32 @@ class _InMemoryUploadRepository:
         async with self._lock:
             return self._records.get(upload_id)
 
+    async def update_status(self, upload: UploadRecord) -> UploadRecord:
+        async with self._lock:
+            existing = self._records.get(upload.id)
+            if existing is None:
+                raise KeyError(upload.id)
+            if (
+                existing.id,
+                existing.original_filename,
+                existing.media_type,
+                existing.sha256,
+                existing.data,
+                existing.created_at,
+            ) != (
+                upload.id,
+                upload.original_filename,
+                upload.media_type,
+                upload.sha256,
+                upload.data,
+                upload.created_at,
+            ):
+                raise ImmutableRecordError(
+                    f"upload {upload.id!r} source fields are immutable"
+                )
+            self._records[upload.id] = upload
+            return upload
+
 
 class _InMemoryPipelineContextRepository:
     def __init__(self, lock: asyncio.Lock) -> None:
@@ -308,6 +334,19 @@ class _InMemoryPipelineContextRepository:
     async def get(self, upload_id: str) -> PipelineContext | None:
         async with self._lock:
             return self._records.get(upload_id)
+
+    async def get_for_transaction(
+        self, transaction_id: str
+    ) -> PipelineContext | None:
+        async with self._lock:
+            return next(
+                (
+                    context
+                    for context in self._records.values()
+                    if transaction_id in context.transaction_statuses
+                ),
+                None,
+            )
 
 
 class _InMemorySyncRunRepository:

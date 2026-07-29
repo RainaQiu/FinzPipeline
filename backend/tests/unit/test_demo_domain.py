@@ -73,6 +73,69 @@ def test_upload_record_rejects_non_string_error_summary_items():
         )
 
 
+def test_pipeline_context_freezes_non_negative_integer_counts():
+    """Persisted workflow counts must not follow caller mutation."""
+    counts = {"raw": 2, "unique": 1}
+    context = PipelineContext(
+        id="context-1",
+        upload_id="upload-1",
+        status="completed",
+        transaction_statuses={},
+        transfer_pairs={},
+        created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+        counts=counts,
+    )
+
+    counts["raw"] = 999
+
+    assert dict(context.counts) == {"raw": 2, "unique": 1}
+    with pytest.raises(TypeError):
+        PipelineContext(
+            id="context-bool",
+            upload_id="upload-1",
+            status="completed",
+            transaction_statuses={},
+            transfer_pairs={},
+            created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+            counts={"raw": True},
+        )
+    with pytest.raises(TypeError):
+        PipelineContext(
+            id="context-float",
+            upload_id="upload-1",
+            status="completed",
+            transaction_statuses={},
+            transfer_pairs={},
+            created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+            counts={"raw": 1.0},
+        )
+    with pytest.raises(TypeError):
+        PipelineContext(
+            id="context-key",
+            upload_id="upload-1",
+            status="completed",
+            transaction_statuses={},
+            transfer_pairs={},
+            created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+            counts={1: 1},
+        )
+    with pytest.raises(ValueError):
+        PipelineContext(
+            id="context-negative",
+            upload_id="upload-1",
+            status="completed",
+            transaction_statuses={},
+            transfer_pairs={},
+            created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+            counts={"raw": -1},
+        )
+
+
 def test_demo_records_canonicalize_all_datetimes_to_utc_milliseconds():
     source = datetime(
         2026,

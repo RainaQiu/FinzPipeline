@@ -71,6 +71,13 @@ def test_ready_upload_and_process_challenge_workbook() -> None:
     assert repeated.status_code == 409
     assert repeated.json()["error"]["code"] == "invalid_state"
 
+    service = LedgerBridgeService(service.unit_of_work)
+    client = TestClient(create_app(ledger_bridge=service))
+    persisted_upload = client.get(f"/api/v1/uploads/{upload_id}")
+    assert persisted_upload.status_code == 200
+    assert persisted_upload.json()["status"] == "completed"
+    assert persisted_upload.json()["counts"] == processed.json()["counts"]
+
     page = client.get(
         "/api/v1/transactions",
         params={"month": "2026-04", "limit": 10, "offset": 0},

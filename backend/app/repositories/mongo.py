@@ -121,7 +121,18 @@ def _upload_from_document(document: Mapping[str, object]) -> UploadRecord:
 def _pipeline_context_from_document(
     document: Mapping[str, object],
 ) -> PipelineContext:
-    return PipelineContext(**_without_mongo_id(document))  # type: ignore[arg-type]
+    values = _without_mongo_id(document)
+    values.pop("transaction_ids", None)
+    stored_statuses = values.get("transaction_statuses")
+    if isinstance(stored_statuses, list):
+        values["transaction_statuses"] = {
+            str(item["transaction_id"]): item["view"]
+            for item in stored_statuses
+            if isinstance(item, Mapping)
+            and "transaction_id" in item
+            and "view" in item
+        }
+    return PipelineContext(**values)  # type: ignore[arg-type]
 
 
 def _sync_run_from_document(document: Mapping[str, object]) -> SyncRunRecord:
@@ -478,6 +489,35 @@ class _MongoUploadRepository:
         document = await self._collection.find_one({"_id": upload_id})
         return _upload_from_document(document) if document is not None else None
 
+    async def update_status(self, upload: UploadRecord) -> UploadRecord:
+        existing = await self.get(upload.id)
+        if existing is None:
+            raise KeyError(upload.id)
+        if (
+            existing.id,
+            existing.original_filename,
+            existing.media_type,
+            existing.sha256,
+            existing.data,
+            existing.created_at,
+        ) != (
+            upload.id,
+            upload.original_filename,
+            upload.media_type,
+            upload.sha256,
+            upload.data,
+            upload.created_at,
+        ):
+            raise ImmutableRecordError(
+                f"upload {upload.id!r} source fields are immutable"
+            )
+        document = _model_document(upload)
+        document["_id"] = upload.id
+        result = await self._collection.replace_one({"_id": upload.id}, document)
+        if result.matched_count != 1:
+            raise KeyError(upload.id)
+        return upload
+
 
 class _MongoPipelineContextRepository:
     def __init__(self, collection) -> None:
@@ -486,6 +526,14 @@ class _MongoPipelineContextRepository:
     async def upsert(self, context: PipelineContext) -> PipelineContext:
         document = _model_document(context)
         document["_id"] = context.upload_id
+        document["transaction_ids"] = sorted(context.transaction_statuses)
+        document["transaction_statuses"] = [
+            {
+                "transaction_id": transaction_id,
+                "view": _thaw(context.transaction_statuses[transaction_id]),
+            }
+            for transaction_id in sorted(context.transaction_statuses)
+        ]
         await self._collection.replace_one(
             {"_id": context.upload_id}, document, upsert=True
         )
@@ -493,6 +541,18 @@ class _MongoPipelineContextRepository:
 
     async def get(self, upload_id: str) -> PipelineContext | None:
         document = await self._collection.find_one({"_id": upload_id})
+        return (
+            _pipeline_context_from_document(document)
+            if document is not None
+            else None
+        )
+
+    async def get_for_transaction(
+        self, transaction_id: str
+    ) -> PipelineContext | None:
+        document = await self._collection.find_one(
+            {"transaction_ids": transaction_id}
+        )
         return (
             _pipeline_context_from_document(document)
             if document is not None
@@ -771,6 +831,9 @@ class MongoUnitOfWork:
         )
         await self._database["pipeline_contexts"].create_index(
             [("upload_id", ASCENDING)], unique=True, name="upload_id_unique"
+        )
+        await self._database["pipeline_contexts"].create_index(
+            [("transaction_ids", ASCENDING)], name="transaction_ids"
         )
         await self._database["sync_runs"].create_index(
             [("id", ASCENDING)], unique=True, name="id_unique"

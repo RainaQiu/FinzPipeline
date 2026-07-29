@@ -42,7 +42,7 @@ async def sync_run(
     run_id: str,
     service: LedgerBridgeService = Depends(get_ledger_bridge),
 ) -> dict[str, object]:
-    return service.get_sync_run(run_id)
+    return await service.get_sync_run(run_id)
 
 
 @router.post("/sync-items/{item_id}/retry")
