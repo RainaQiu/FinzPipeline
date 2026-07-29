@@ -29,12 +29,15 @@ transaction is created by any UI or API route.
 
 ## Tests
 
+GitHub Actions runs this same Python 3.12 and pnpm baseline for pull requests
+and pushes to `main`.
+
 ```powershell
 Set-Location backend
 & ..\.venv312\Scripts\python.exe -m pytest -q
 
 Set-Location ..\frontend
-pnpm test -- --run
+pnpm exec vitest run
 pnpm build
 ```
 
