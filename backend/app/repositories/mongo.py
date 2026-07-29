@@ -598,11 +598,11 @@ class _MongoPipelineContextRepository:
             )
         except DuplicateKeyError:
             raise TransactionContextConflictError(
-                "pipeline context belongs to another claim or upload"
+                "pipeline context belongs to another upload or processing claim"
             ) from None
         if saved is None:
             raise TransactionContextConflictError(
-                "pipeline context belongs to another claim or upload"
+                "pipeline context belongs to another upload or processing claim"
             )
         return context
 
