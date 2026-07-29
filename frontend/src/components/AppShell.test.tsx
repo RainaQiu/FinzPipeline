@@ -27,4 +27,24 @@ describe("AppShell", () => {
     expect(screen.getByRole("link", { name: "Reconciliation" })).toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveTextContent("Transaction review");
   });
+
+  it("keeps the shared-demo data handling disclosure visible", () => {
+    render(
+      <MemoryRouter>
+        <AppShell>
+          <h1>Dashboard</h1>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    const disclosure = screen.getByRole("complementary", {
+      name: "Shared demonstration notice",
+    });
+    expect(disclosure).toHaveTextContent(
+      "Shared demonstration environment. Do not upload sensitive or real financial data.",
+    );
+    expect(disclosure).toHaveTextContent(
+      /Authentication, tenant isolation, and per-user data separation are intentionally outside/i,
+    );
+  });
 });

@@ -27,6 +27,30 @@ pnpm dev
 Open `http://localhost:5173`. The default repository is in memory. No QBO
 transaction is created by any UI or API route.
 
+## Public Render demo
+
+The public challenge demo runs as one Render Web Service: Render builds the
+React app, then FastAPI serves its built files and the existing relative
+`/api/v1/...` endpoints from the same HTTPS origin. Browser deep links such as
+`/review` return the SPA; API, health, readiness, and documentation routes
+remain backend routes.
+
+Create the service from `render.yaml`, then set these values manually in the
+Render dashboard (they are deliberately not stored in the blueprint):
+
+- `APP_BASE_URL` to the service's HTTPS URL.
+- `MONGODB_URI` and `MONGODB_DATABASE` for a non-placeholder Mongo database.
+- Sandbox-only `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, and `QBO_REDIRECT_URI`
+  (the redirect is `<APP_BASE_URL>/api/v1/integrations/qbo/callback`).
+
+Production refuses to start with the in-memory repository, placeholder Mongo
+settings, non-sandbox QBO, missing QBO settings, a non-HTTPS public URL, or a
+missing frontend build. `/health` is liveness; `/ready` reports dependency
+readiness and does not expose connection details. This is a shared
+demonstration environment: do not upload sensitive or real financial data.
+Authentication, tenant isolation, and per-user data separation are
+intentionally outside this challenge demo scope.
+
 ## Tests
 
 GitHub Actions runs this same Python 3.12 and pnpm baseline for pull requests

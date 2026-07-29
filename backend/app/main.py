@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import SecretStr
 
 from app.api.errors import install_error_handlers
@@ -60,6 +62,7 @@ def create_app(
     ledger_bridge: LedgerBridgeService | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_environment(require_qbo=False)
+    settings.validate_public_runtime()
     qbo_settings = _QboRuntimeSettings.from_settings(settings)
     owns_unit_of_work = unit_of_work is None and settings.repository_backend == "mongo"
     selected_uow = unit_of_work
@@ -75,8 +78,12 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        application.state.repository_ready = True
         if owns_unit_of_work:
-            await selected_uow.create_indexes()
+            try:
+                await selected_uow.create_indexes()
+            except Exception:
+                application.state.repository_ready = False
         yield
         if owns_unit_of_work:
             await selected_uow.aclose()
@@ -109,7 +116,26 @@ def create_app(
     app.include_router(qbo_oauth_router)
     app.include_router(qbo_sync_router)
     app.include_router(reconciliations_router)
+    _install_frontend_routes(app, settings.frontend_static_dir)
     return app
+
+
+def _install_frontend_routes(app: FastAPI, static_dir: Path | None) -> None:
+    """Serve a built SPA only after all API and documentation routes are registered."""
+    if static_dir is None or not (index_file := static_dir / "index.html").is_file():
+        return
+    root = static_dir.resolve()
+    reserved_paths = {"api", "health", "ready", "docs", "redoc", "openapi.json"}
+
+    @app.get("/{requested_path:path}", include_in_schema=False)
+    async def frontend(requested_path: str):
+        first_segment = requested_path.split("/", 1)[0]
+        if first_segment in reserved_paths:
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = (root / requested_path).resolve()
+        if candidate.is_file() and candidate.is_relative_to(root):
+            return FileResponse(candidate)
+        return FileResponse(index_file)
 
 
 app = create_app()

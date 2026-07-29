@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 import os
+from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import SecretStr
 
@@ -21,6 +23,9 @@ class Settings:
     qbo_token_url: str
     qbo_base_url: str
     qbo_scope: str
+    app_environment: str
+    public_base_url: str
+    frontend_static_dir: Path | None
 
     @classmethod
     def from_environment(cls, require_qbo: bool = False) -> "Settings":
@@ -39,7 +44,7 @@ class Settings:
 
         return cls(
             mongodb_uri=SecretStr(
-                os.getenv("MONGODB_URI", "mongodb://127.0.0.1:27017").strip()
+                os.getenv("MONGODB_URI", "").strip()
             ),
             mongodb_database=os.getenv("MONGODB_DATABASE", "finz_ledger_bridge").strip()
             or "finz_ledger_bridge",
@@ -64,4 +69,34 @@ class Settings:
             qbo_scope=os.getenv(
                 "QBO_SCOPE", "com.intuit.quickbooks.accounting"
             ).strip(),
+            app_environment=os.getenv("APP_ENVIRONMENT", "development").strip().lower()
+            or "development",
+            public_base_url=os.getenv("APP_BASE_URL", "http://localhost:8000").strip(),
+            frontend_static_dir=(
+                Path(value).expanduser()
+                if (value := os.getenv("FRONTEND_STATIC_DIR", "").strip())
+                else None
+            ),
         )
+
+    def validate_public_runtime(self) -> None:
+        """Reject unsafe public deployment settings without exposing their values."""
+        if self.app_environment != "production":
+            return
+        if self.repository_backend != "mongo":
+            raise ConfigurationError(("FINZ_REPOSITORY_BACKEND",))
+        mongodb_uri = self.mongodb_uri.get_secret_value().strip().lower()
+        if not mongodb_uri or "placeholder" in mongodb_uri or "<" in mongodb_uri:
+            raise ConfigurationError(("MONGODB_URI",))
+        if self.qbo_environment.lower() != "sandbox":
+            raise ConfigurationError(("QBO_ENVIRONMENT",))
+        if self.qbo_client_id is None:
+            raise ConfigurationError(("QBO_CLIENT_ID",))
+        if self.qbo_client_secret is None:
+            raise ConfigurationError(("QBO_CLIENT_SECRET",))
+        if not self.qbo_redirect_uri:
+            raise ConfigurationError(("QBO_REDIRECT_URI",))
+        if urlparse(self.public_base_url).scheme != "https":
+            raise ConfigurationError(("APP_BASE_URL",))
+        if self.frontend_static_dir is None or not (self.frontend_static_dir / "index.html").is_file():
+            raise RuntimeError("Production startup requires a built frontend directory with index.html")

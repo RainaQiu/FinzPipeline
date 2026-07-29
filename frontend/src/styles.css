@@ -155,6 +155,20 @@ dl {
   font-size: 0.76rem;
 }
 
+.demo-disclosure {
+  margin-top: 16px;
+  padding: 12px 10px 0;
+  border-top: 1px solid var(--line);
+  color: var(--amber);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.demo-disclosure strong,
+.demo-disclosure span {
+  display: block;
+}
+
 .status-dot {
   display: inline-block;
   width: 8px;
@@ -1009,6 +1023,10 @@ tbody tr.selected {
   .nav-link svg,
   .sidebar-foot {
     display: none;
+  }
+
+  .demo-disclosure {
+    margin-top: 10px;
   }
 
   .page {

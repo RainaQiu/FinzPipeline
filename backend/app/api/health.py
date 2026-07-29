@@ -19,6 +19,8 @@ async def health(request: Request) -> dict[str, str]:
 
 @router.get("/ready")
 async def ready(request: Request) -> dict[str, str]:
+    if not getattr(request.app.state, "repository_ready", True):
+        raise HTTPException(status_code=503, detail="Required repository is unavailable")
     unit_of_work = request.app.state.unit_of_work
     ping = getattr(unit_of_work, "ping", None)
     if ping is not None:

@@ -1,0 +1,1 @@
+window.finz = true;

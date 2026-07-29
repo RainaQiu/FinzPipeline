@@ -18,6 +18,17 @@ const navigation = [
   { to: "/reconciliation", label: "Reconciliation", icon: CircleDollarSign, end: false },
 ] as const;
 
+const demoDisclosure = (
+  <aside className="demo-disclosure" aria-label="Shared demonstration notice">
+    <strong>Shared demonstration environment.</strong>
+    <span> Do not upload sensitive or real financial data.</span>
+    <span>
+      Authentication, tenant isolation, and per-user data separation are intentionally outside
+      this challenge demo scope.
+    </span>
+  </aside>
+);
+
 export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="app-shell">
@@ -46,6 +57,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <span className="status-dot" aria-hidden="true" />
           Local review workspace
         </div>
+        {demoDisclosure}
       </aside>
       <main className="main-content">{children}</main>
     </div>
