@@ -22,7 +22,12 @@ describe("QboPage", () => {
 
     expect(await screen.findByText("Writes disabled")).toBeInTheDocument();
     expect(screen.getAllByText(/pending outbox/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/No QBO transaction write network access has occurred/i)).toBeInTheDocument();
+    const networkNote = screen
+      .getByText(/No QBO transaction write network access has occurred/i)
+      .closest(".network-note");
+    expect(networkNote).toHaveTextContent(
+      "No QBO transaction write network access has occurred. OAuth and read-only verification",
+    );
   });
 
   it("blocks planning when the safety status cannot be verified", async () => {
@@ -83,7 +88,10 @@ describe("QboPage", () => {
       await screen.findByRole("button", { name: "Build pending outbox plan" }),
     );
 
-    expect(await screen.findByText("4 items planned")).toBeInTheDocument();
+    const planResult = (await screen.findByText("4 items planned")).closest(".plan-result");
+    expect(planResult).toHaveTextContent(
+      "4 items planned Run run-1234 remains pending; writes are disabled.",
+    );
     const syncCall = fetchMock.mock.calls.find(([input]) =>
       String(input).endsWith("/api/v1/integrations/qbo/sync"),
     );

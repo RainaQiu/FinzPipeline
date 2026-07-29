@@ -56,11 +56,11 @@ describe("PnlPage", () => {
     const user = userEvent.setup();
     renderWithClient(<PnlPage />);
 
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Drill into 4000 Repair Service Revenue",
-      }),
-    );
+    const accountLine = await screen.findByRole("button", {
+      name: "Drill into 4000 Repair Service Revenue",
+    });
+    expect(accountLine).toHaveTextContent("4000 Repair Service Revenue");
+    await user.click(accountLine);
 
     const heading = await screen.findByRole("heading", {
       name: "4000 · Repair Service Revenue",
@@ -68,6 +68,7 @@ describe("PnlPage", () => {
     const drilldown = heading.closest("aside");
     expect(drilldown).not.toBeNull();
     expect(within(drilldown!).getByText("Home repair invoice")).toBeInTheDocument();
+    expect(drilldown).toHaveTextContent("Home repair invoice Apr 5, 2026");
     expect(within(drilldown!).getAllByText("$1,250.00").length).toBeGreaterThan(0);
   });
 });

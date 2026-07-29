@@ -57,6 +57,7 @@ export function QboPage() {
               <ShieldCheck aria-hidden="true" />
               <span>
                 <strong>No QBO transaction write network access has occurred.</strong>
+                {" "}
                 OAuth and read-only verification may use QBO separately; this
                 workspace only builds deterministic transaction payload previews.
               </span>
@@ -91,6 +92,7 @@ export function QboPage() {
                 <CheckCircle2 aria-hidden="true" />
                 <span>
                   <strong>{plan.data.planned_items} items planned</strong>
+                  {" "}
                   Run {plan.data.id.slice(0, 8)} remains pending; writes are disabled.
                 </span>
               </div>

@@ -47,6 +47,9 @@ describe("ReconciliationPage", () => {
 
     const table = await screen.findByRole("table");
     expect(within(table).getByText("Mismatch")).toBeInTheDocument();
+    expect(within(table).getByText("4000").closest("td")).toHaveTextContent(
+      "4000 Difference",
+    );
     expect(screen.getByText("Difference: $100.00")).toBeInTheDocument();
     expect(screen.getByText("Check missing or duplicated QBO rows")).toBeInTheDocument();
   });

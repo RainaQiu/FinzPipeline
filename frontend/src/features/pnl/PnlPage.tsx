@@ -149,6 +149,7 @@ export function PnlPage() {
                       <li key={transaction.id}>
                         <span>
                           <strong>{transaction.description}</strong>
+                          {" "}
                           <small>{formatDate(transaction.transaction_date)}</small>
                         </span>
                         <strong>{formatMoney(transaction.amount_minor)}</strong>
@@ -194,6 +195,7 @@ function StatementSection({
           >
             <span>
               <small>{line.account_number}</small>
+              {" "}
               {line.account_name}
             </span>
             <span>

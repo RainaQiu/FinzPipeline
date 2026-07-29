@@ -598,6 +598,11 @@ button.statement-line:hover {
   border-bottom: 1px solid #edf0f4;
 }
 
+.transaction-list li > span {
+  display: grid;
+  gap: 4px;
+}
+
 .review-count {
   color: var(--muted);
   font-weight: 700;
@@ -868,6 +873,20 @@ tbody tr.selected {
   color: var(--amber);
 }
 
+.network-note,
+.plan-result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.network-note > span,
+.plan-result > span {
+  display: grid;
+  gap: 4px;
+}
+
 .outbox-planner {
   display: grid;
   gap: 18px;
@@ -907,6 +926,13 @@ tbody tr.selected {
   color: var(--muted);
   font-size: 0.82rem;
   line-height: 1.5;
+}
+
+.account-status,
+.reconciliation-result {
+  display: grid;
+  justify-items: start;
+  gap: 5px;
 }
 
 .empty-comparison {
