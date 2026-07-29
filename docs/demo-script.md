@@ -10,12 +10,16 @@
 5. On **Transaction Review**, filter by review status, duplicate status, or any
    of the 21 accounts. Open an item, inspect evidence, and exercise the
    correction dialog.
-6. On **Internal P&L**, select 2026-04-01 through 2026-06-30. Confirm revenue
+6. Before validating P&L, filter **Account** to `4100 · Customer Refunds` and
+   **Approval status** to `Suggested`. Inspect and approve the three refund
+   transactions for April, May, and June. Confirm the filtered queue reaches
+   zero and the approved refunds total `-502,500` cents.
+7. On **Internal P&L**, select 2026-04-01 through 2026-06-30. Confirm revenue
    30,027,500 cents, COGS 9,385,000 cents, operating expenses 13,824,500 cents,
    and net profit 6,818,000 cents.
-7. On **QBO Sync**, create a plan and confirm the UI reports plan-only mode and
+8. On **QBO Sync**, create a plan and confirm the UI reports plan-only mode and
    `execution_authorized=false`. Do not attempt a real QBO write.
-8. On **Reconciliation**, supply a Cash/USD report snapshot for the same exact
+9. On **Reconciliation**, supply a Cash/USD report snapshot for the same exact
    period. A valid matching snapshot shows zero-cent differences.
 
 For a database-backed demo, follow `docs/local-mongodb.md`. This validates local

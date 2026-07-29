@@ -137,21 +137,26 @@ export function ReconciliationPage() {
                     return (
                       <tr key={line.account_number}>
                         <td>
-                          <strong>{line.account_number}</strong>
-                          <small>{titleCase(line.status)}</small>
+                          <span className="account-status">
+                            <strong>{line.account_number}</strong>
+                            {" "}
+                            <small>{titleCase(line.status)}</small>
+                          </span>
                         </td>
                         <td>{formatMoney(line.internal_minor)}</td>
                         <td>{formatMoney(line.qbo_minor)}</td>
                         <td>
-                          <StatusBadge tone={mismatch ? "danger" : "success"}>
-                            {mismatch ? "Mismatch" : "Matched"}
-                          </StatusBadge>
-                          <span className={mismatch ? "difference-value" : undefined}>
-                            Difference: {formatMoney(line.difference_minor)}
+                          <span className="reconciliation-result">
+                            <StatusBadge tone={mismatch ? "danger" : "success"}>
+                              {mismatch ? "Mismatch" : "Matched"}
+                            </StatusBadge>
+                            <span className={mismatch ? "difference-value" : undefined}>
+                              Difference: {formatMoney(line.difference_minor)}
+                            </span>
+                            {line.diagnostic_candidates.map((candidate) => (
+                              <small key={candidate}>{candidate}</small>
+                            ))}
                           </span>
-                          {line.diagnostic_candidates.map((candidate) => (
-                            <small key={candidate}>{candidate}</small>
-                          ))}
                         </td>
                       </tr>
                     );
