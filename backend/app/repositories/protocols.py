@@ -9,6 +9,16 @@ from typing import Mapping, Protocol
 
 from app.domain.accounting import OutboxItem, OutboxStatus
 from app.domain.classification import ClassificationDecision
+from app.domain.demo import (
+    DemoGrant,
+    ExecutionLease,
+    PipelineContext,
+    QboConnection,
+    ReconciliationRunRecord,
+    ResetRun,
+    SyncRunRecord,
+    UploadRecord,
+)
 from app.domain.transactions import NormalizedTransaction, RawRecord, _freeze_value
 
 
@@ -120,6 +130,54 @@ class AuditRepository(Protocol):
     async def list(self, *, offset: int = 0, limit: int | None = None) -> tuple[AuditEvent, ...]: ...
 
 
+class UploadRepository(Protocol):
+    async def add(self, upload: UploadRecord) -> UploadRecord: ...
+
+    async def get(self, upload_id: str) -> UploadRecord | None: ...
+
+
+class PipelineContextRepository(Protocol):
+    async def upsert(self, context: PipelineContext) -> PipelineContext: ...
+
+    async def get(self, upload_id: str) -> PipelineContext | None: ...
+
+
+class SyncRunRepository(Protocol):
+    async def add(self, run: SyncRunRecord) -> SyncRunRecord: ...
+
+    async def get(self, run_id: str) -> SyncRunRecord | None: ...
+
+
+class ReconciliationRunRepository(Protocol):
+    async def add(self, run: ReconciliationRunRecord) -> ReconciliationRunRecord: ...
+
+    async def get(self, run_id: str) -> ReconciliationRunRecord | None: ...
+
+
+class DemoGrantRepository(Protocol):
+    async def issue(self, grant: DemoGrant) -> DemoGrant: ...
+
+    async def consume_valid(self, token_hash: str, *, now: datetime) -> DemoGrant | None: ...
+
+
+class QboConnectionRepository(Protocol):
+    async def upsert(self, connection: QboConnection) -> QboConnection: ...
+
+    async def get(self) -> QboConnection | None: ...
+
+
+class ExecutionLeaseRepository(Protocol):
+    async def acquire(self, lease: ExecutionLease, *, now: datetime) -> bool: ...
+
+    async def release(self, lease_id: str) -> None: ...
+
+
+class DemoResetRepository(Protocol):
+    async def add(self, run: ResetRun) -> ResetRun: ...
+
+    async def clear_shared_workspace(self) -> None: ...
+
+
 class UnitOfWork(Protocol):
     raw_records: RawRecordRepository
     transactions: TransactionRepository
@@ -127,6 +185,14 @@ class UnitOfWork(Protocol):
     outbox: OutboxRepository
     audit: AuditRepository
     oauth_states: OAuthStateRepository
+    uploads: UploadRepository
+    pipeline_contexts: PipelineContextRepository
+    sync_runs: SyncRunRepository
+    reconciliation_runs: ReconciliationRunRepository
+    demo_grants: DemoGrantRepository
+    qbo_connection: QboConnectionRepository
+    execution_leases: ExecutionLeaseRepository
+    demo_reset: DemoResetRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 
