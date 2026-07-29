@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
-from app.domain.demo import DemoGrant, QboConnection
+import pytest
+
+from app.domain.demo import DemoGrant, QboConnection, UploadRecord
 
 
 def test_demo_grant_never_retains_plaintext_token():
@@ -28,3 +30,35 @@ def test_qbo_connection_repr_redacts_ciphertext():
 
     assert "cipher-a" not in repr(connection)
     assert "cipher-r" not in repr(connection)
+
+
+def test_upload_record_freezes_caller_owned_error_summary():
+    """Later caller mutations must not change a persisted upload's errors."""
+    errors = ["first"]
+    record = UploadRecord(
+        id="upload-1",
+        original_filename="source.csv",
+        media_type="text/csv",
+        sha256="a" * 64,
+        data=b"source",
+        created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+        error_summary=errors,
+    )
+
+    errors.append("mutated")
+
+    assert record.error_summary == ("first",)
+
+
+def test_upload_record_rejects_non_string_error_summary_items():
+    """Error summaries are persisted display strings, never arbitrary values."""
+    with pytest.raises(TypeError):
+        UploadRecord(
+            id="upload-1",
+            original_filename="source.csv",
+            media_type="text/csv",
+            sha256="a" * 64,
+            data=b"source",
+            created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+            error_summary=("first", 2),
+        )

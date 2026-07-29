@@ -41,6 +41,9 @@ class UploadRecord:
         _require_aware_datetime(self.created_at, "created_at")
         if self.completed_at is not None:
             _require_aware_datetime(self.completed_at, "completed_at")
+        if not all(isinstance(error, str) for error in self.error_summary):
+            raise TypeError("error_summary items must be strings")
+        object.__setattr__(self, "error_summary", tuple(self.error_summary))
 
 
 @dataclass(frozen=True, slots=True)
