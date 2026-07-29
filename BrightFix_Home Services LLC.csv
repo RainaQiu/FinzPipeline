@@ -1,0 +1,54 @@
+﻿Account number,Account name,Account type,Detail type
+1000,Operating Checking,Bank,Checking
+1010,Tax Reserve,Bank,Savings
+1500,Tools & Equipment,Fixed Assets,Machinery & Equipment
+3000,Owner's Equity,Equity,Owner's Equity
+4000,Repair Service Revenue,Income,Service/Fee Income
+4010,Installation Revenue,Income,Service/Fee Income
+4020,Maintenance Plan Revenue,Income,Service/Fee Income
+4100,Customer Refunds,Income,Discounts/Refunds Given
+5000,Materials & Supplies,Cost of Goods Sold,Supplies & Materials - COGS
+5010,Subcontractor Costs,Cost of Goods Sold,Cost of labor - COS
+6000,Payroll Expense,Expenses,Payroll Expenses
+6010,Rent Expense,Expenses,Rent or Lease of Buildings
+6020,Vehicle & Fuel,Expenses,Auto
+6030,Software & Subscriptions,Expenses,Dues & subscriptions
+6040,Marketing & Advertising,Expenses,Advertising/Promotional
+6050,Insurance Expense,Expenses,Insurance
+6070,Professional Fees,Expenses,Legal & Professional Fees
+6080,Bank Fees,Expenses,Bank Charges
+6090,Office & General,Expenses,Office/General Administrative Expenses
+6100,Repairs & Maintenance,Expenses,Repair & Maintenance
+,Prepaid Expenses,Other Current Assets,Prepaid Expenses
+,Uncategorized Asset,Other Current Assets,Other Current Assets
+,Undeposited Funds,Other Current Assets,Undeposited Funds
+,Retained Earnings,Equity,Retained Earnings
+,Billable Expense Income,Income,Service/Fee Income
+,Discounts,Income,Discounts/Refunds Given
+,Gross Receipts,Income,Sales of Product Income
+,Refunds-Allowances,Income,Discounts/Refunds Given
+,Sales,Income,Sales of Product Income
+,Services,Income,Service/Fee Income
+,Uncategorized Income,Income,Service/Fee Income
+,Advertising,Expenses,Advertising/Promotional
+,Bank Charges,Expenses,Bank Charges
+,Commissions & fees,Expenses,Other Miscellaneous Service Cost
+,Disposal Fees,Expenses,Other Miscellaneous Service Cost
+,Dues & Subscriptions,Expenses,Dues & subscriptions
+,Insurance,Expenses,Insurance
+,Insurance - Liability,Expenses,Insurance
+,Legal & Professional Fees,Expenses,Legal & Professional Fees
+,Meals and Entertainment,Expenses,Entertainment Meals
+,Promotional,Expenses,Advertising/Promotional
+,Rent or Lease,Expenses,Rent or Lease of Buildings
+,Repair & Maintenance,Expenses,Repair & Maintenance
+,Stationery & Printing,Expenses,Office/General Administrative Expenses
+,Supplies,Expenses,Supplies & Materials
+,Tools,Expenses,Supplies & Materials
+,Travel Meals,Expenses,Travel Meals
+,Uncategorized Expense,Expenses,Other Miscellaneous Service Cost
+,Utilities,Expenses,Utilities
+,Interest Earned,Other Income,Interest Earned
+,Other Portfolio Income,Other Income,Other Miscellaneous Income
+,Miscellaneous,Other Expense,Other Miscellaneous Expense
+,Penalties & Settlements,Other Expense,Penalties & Settlements

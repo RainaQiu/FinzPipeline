@@ -1,0 +1,289 @@
+"""Async, concurrency-safe in-memory repositories used by tests and local flows."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+from datetime import date, datetime, timezone
+from hashlib import sha256
+
+from app.domain.accounting import OutboxItem, OutboxStatus
+from app.domain.classification import ClassificationDecision
+from app.domain.transactions import NormalizedTransaction, RawRecord
+from app.repositories.protocols import (
+    AuditEvent,
+    ImmutableRecordError,
+    InvalidStateTransitionError,
+    OAuthState,
+    OAuthStateExpiredError,
+)
+
+
+class _InMemoryRawRecordRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._records: dict[str, RawRecord] = {}
+
+    async def add(self, record: RawRecord) -> RawRecord:
+        async with self._lock:
+            existing = self._records.get(record.id)
+            if existing is None:
+                self._records[record.id] = record
+                return record
+            if replace(existing, ingested_at=record.ingested_at) != record:
+                raise ImmutableRecordError(f"raw record {record.id!r} is immutable")
+            return existing
+
+    async def get(self, record_id: str) -> RawRecord | None:
+        async with self._lock:
+            return self._records.get(record_id)
+
+    async def list(self, *, offset: int = 0, limit: int | None = None) -> tuple[RawRecord, ...]:
+        if offset < 0 or limit is not None and limit < 0:
+            raise ValueError("offset and limit must not be negative")
+        async with self._lock:
+            records = tuple(self._records.values())
+        return records[offset:] if limit is None else records[offset : offset + limit]
+
+
+class _InMemoryClassificationRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._by_id: dict[str, ClassificationDecision] = {}
+        self._by_transaction: dict[str, list[ClassificationDecision]] = {}
+
+    async def append(self, decision: ClassificationDecision) -> ClassificationDecision:
+        async with self._lock:
+            existing = self._by_id.get(decision.id)
+            if existing is not None:
+                if existing == decision:
+                    return existing
+                raise ImmutableRecordError(
+                    f"classification decision {decision.id!r} is append-only"
+                )
+            history = self._by_transaction.setdefault(decision.transaction_id, [])
+            stored = replace(decision, version=len(history) + 1)
+            self._by_id[stored.id] = stored
+            history.append(stored)
+            return stored
+
+    async def latest(self, transaction_id: str) -> ClassificationDecision | None:
+        async with self._lock:
+            history = self._by_transaction.get(transaction_id, ())
+            return history[-1] if history else None
+
+    async def history(
+        self, transaction_id: str, *, offset: int = 0, limit: int | None = None
+    ) -> tuple[ClassificationDecision, ...]:
+        if offset < 0 or limit is not None and limit < 0:
+            raise ValueError("offset and limit must not be negative")
+        async with self._lock:
+            decisions = tuple(self._by_transaction.get(transaction_id, ()))
+        return decisions[offset:] if limit is None else decisions[offset : offset + limit]
+
+
+class _InMemoryTransactionRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._transactions: dict[str, NormalizedTransaction] = {}
+
+    async def add(self, transaction: NormalizedTransaction) -> NormalizedTransaction:
+        async with self._lock:
+            existing = self._transactions.get(transaction.id)
+            if existing is None:
+                self._transactions[transaction.id] = transaction
+                return transaction
+            if existing != transaction:
+                raise ImmutableRecordError(f"transaction {transaction.id!r} is immutable")
+            return existing
+
+    async def get(self, transaction_id: str) -> NormalizedTransaction | None:
+        async with self._lock:
+            return self._transactions.get(transaction_id)
+
+    async def list(
+        self,
+        *,
+        raw_record_id: str | None = None,
+        bank_transaction_id: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> tuple[NormalizedTransaction, ...]:
+        if offset < 0 or limit is not None and limit < 0:
+            raise ValueError("offset and limit must not be negative")
+        if start_date is not None and end_date is not None and start_date > end_date:
+            raise ValueError("start_date must not be after end_date")
+        async with self._lock:
+            values = tuple(self._transactions.values())
+        filtered = tuple(
+            transaction
+            for transaction in values
+            if (raw_record_id is None or transaction.raw_record_id == raw_record_id)
+            and (bank_transaction_id is None or transaction.bank_transaction_id == bank_transaction_id)
+            and (start_date is None or transaction.transaction_date >= start_date)
+            and (end_date is None or transaction.transaction_date <= end_date)
+        )
+        return filtered[offset:] if limit is None else filtered[offset : offset + limit]
+
+
+class _InMemoryOutboxRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._by_id: dict[str, OutboxItem] = {}
+        self._by_key: dict[str, str] = {}
+
+    @staticmethod
+    def _key(item: OutboxItem) -> str:
+        return item.idempotency_key or item.id
+
+    async def add(self, item: OutboxItem) -> OutboxItem:
+        async with self._lock:
+            key = self._key(item)
+            existing_id = self._by_key.get(key)
+            if existing_id is not None:
+                return self._by_id[existing_id]
+            by_id = self._by_id.get(item.id)
+            if by_id is not None:
+                if by_id != item:
+                    raise ImmutableRecordError(f"outbox item {item.id!r} is immutable")
+                return by_id
+            stored = item if item.idempotency_key else replace(item, idempotency_key=key)
+            self._by_id[stored.id] = stored
+            self._by_key[key] = stored.id
+            return stored
+
+    async def get(self, item_id: str) -> OutboxItem | None:
+        async with self._lock:
+            return self._by_id.get(item_id)
+
+    async def claim_pending(self, *, limit: int = 1) -> tuple[OutboxItem, ...]:
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        claimed: list[OutboxItem] = []
+        async with self._lock:
+            for item_id, item in self._by_id.items():
+                if len(claimed) == limit:
+                    break
+                if item.status is OutboxStatus.PENDING:
+                    updated = replace(
+                        item,
+                        status=OutboxStatus.PROCESSING,
+                        attempt_count=item.attempt_count + 1,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                    self._by_id[item_id] = updated
+                    claimed.append(updated)
+        return tuple(claimed)
+
+    async def transition(
+        self,
+        item_id: str,
+        status: OutboxStatus,
+        *,
+        updated_at: datetime | None = None,
+        next_attempt_at: datetime | None = None,
+        last_error_code: str | None = None,
+        qbo_entity_id: str | None = None,
+        sync_token: str | None = None,
+    ) -> OutboxItem:
+        async with self._lock:
+            item = self._by_id.get(item_id)
+            if item is None:
+                raise KeyError(item_id)
+            allowed = {
+                OutboxStatus.PENDING: {OutboxStatus.PROCESSING},
+                OutboxStatus.PROCESSING: {
+                    OutboxStatus.SUCCEEDED,
+                    OutboxStatus.RETRYABLE_FAILED,
+                    OutboxStatus.PERMANENT_FAILED,
+                },
+                OutboxStatus.RETRYABLE_FAILED: {OutboxStatus.PROCESSING},
+                OutboxStatus.SUCCEEDED: set(),
+                OutboxStatus.PERMANENT_FAILED: set(),
+            }
+            if status not in allowed[item.status]:
+                raise InvalidStateTransitionError(f"cannot transition {item.status} to {status}")
+            updated = replace(
+                item,
+                status=status,
+                updated_at=updated_at or datetime.now(timezone.utc),
+                next_attempt_at=next_attempt_at,
+                last_error_code=last_error_code,
+                qbo_entity_id=qbo_entity_id if qbo_entity_id is not None else item.qbo_entity_id,
+                sync_token=sync_token if sync_token is not None else item.sync_token,
+            )
+            self._by_id[item_id] = updated
+            return updated
+
+
+class _InMemoryOAuthStateRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._states: dict[str, OAuthState] = {}
+
+    @staticmethod
+    def _hash(state: str) -> str:
+        return sha256(state.encode("utf-8")).hexdigest()
+
+    async def put(self, state: str, *, expires_at: datetime) -> OAuthState:
+        state_hash = self._hash(state)
+        saved = OAuthState(state_hash=state_hash, expires_at=expires_at)
+        async with self._lock:
+            self._states[state_hash] = saved
+        return saved
+
+    async def consume(self, state: str, *, now: datetime | None = None) -> OAuthState | None:
+        state_hash = self._hash(state)
+        current_time = now or datetime.now(timezone.utc)
+        async with self._lock:
+            saved = self._states.pop(state_hash, None)
+            if saved is None:
+                return None
+            if saved.expires_at <= current_time:
+                raise OAuthStateExpiredError("OAuth state has expired")
+            return saved
+
+
+class _InMemoryAuditRepository:
+    def __init__(self, lock: asyncio.Lock) -> None:
+        self._lock = lock
+        self._events: list[AuditEvent] = []
+
+    async def append(self, event: AuditEvent) -> AuditEvent:
+        async with self._lock:
+            stored = replace(event, sequence=len(self._events) + 1)
+            self._events.append(stored)
+            return stored
+
+    async def list(self, *, offset: int = 0, limit: int | None = None) -> tuple[AuditEvent, ...]:
+        if offset < 0 or limit is not None and limit < 0:
+            raise ValueError("offset and limit must not be negative")
+        async with self._lock:
+            events = tuple(self._events)
+        return events[offset:] if limit is None else events[offset : offset + limit]
+
+
+class InMemoryUnitOfWork:
+    """A process-local unit of work with shared locks for atomic operations."""
+
+    def __init__(self) -> None:
+        self._raw_lock = asyncio.Lock()
+        self._transaction_lock = asyncio.Lock()
+        self._classification_lock = asyncio.Lock()
+        self._outbox_lock = asyncio.Lock()
+        self._oauth_state_lock = asyncio.Lock()
+        self._audit_lock = asyncio.Lock()
+        self.raw_records = _InMemoryRawRecordRepository(self._raw_lock)
+        self.transactions = _InMemoryTransactionRepository(self._transaction_lock)
+        self.classifications = _InMemoryClassificationRepository(self._classification_lock)
+        self.outbox = _InMemoryOutboxRepository(self._outbox_lock)
+        self.oauth_states = _InMemoryOAuthStateRepository(self._oauth_state_lock)
+        self.audit = _InMemoryAuditRepository(self._audit_lock)
+
+    async def __aenter__(self) -> "InMemoryUnitOfWork":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None

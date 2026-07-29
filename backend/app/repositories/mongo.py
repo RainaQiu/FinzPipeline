@@ -1,0 +1,530 @@
+"""MongoDB repositories with the same contracts as the in-memory implementation."""
+
+from __future__ import annotations
+
+from dataclasses import fields, replace
+from datetime import date, datetime, timezone
+from enum import Enum
+from hashlib import sha256
+from typing import Any, Mapping
+
+from bson.codec_options import CodecOptions
+from pymongo import ASCENDING, ReturnDocument
+from pymongo.errors import DuplicateKeyError
+
+from app.domain.accounting import OutboxItem, OutboxStatus
+from app.domain.classification import (
+    ApprovalStatus,
+    ClassificationDecision,
+    DecisionSource,
+    TransactionType,
+)
+from app.domain.transactions import Direction, NormalizedTransaction, RawRecord
+from app.repositories.protocols import (
+    AuditEvent,
+    ImmutableRecordError,
+    InvalidStateTransitionError,
+    OAuthState,
+    OAuthStateExpiredError,
+)
+
+
+def _validate_page(offset: int, limit: int | None) -> None:
+    if offset < 0 or limit is not None and limit < 0:
+        raise ValueError("offset and limit must not be negative")
+
+
+def _thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return [_thaw(item) for item in value]
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
+def _model_document(model: object) -> dict[str, object]:
+    return {
+        field.name: _thaw(getattr(model, field.name))
+        for field in fields(model)  # type: ignore[arg-type]
+    }
+
+
+def _without_mongo_id(document: Mapping[str, object]) -> dict[str, object]:
+    return {key: value for key, value in document.items() if key != "_id"}
+
+
+def _raw_from_document(document: Mapping[str, object]) -> RawRecord:
+    return RawRecord(**_without_mongo_id(document))  # type: ignore[arg-type]
+
+
+def _transaction_document(transaction: NormalizedTransaction) -> dict[str, object]:
+    document = _model_document(transaction)
+    document["transaction_date"] = transaction.transaction_date.isoformat()
+    document["posted_date"] = transaction.posted_date.isoformat()
+    return document
+
+
+def _transaction_from_document(document: Mapping[str, object]) -> NormalizedTransaction:
+    values = _without_mongo_id(document)
+    values["transaction_date"] = date.fromisoformat(str(values["transaction_date"]))
+    values["posted_date"] = date.fromisoformat(str(values["posted_date"]))
+    values["direction"] = Direction(str(values["direction"]))
+    return NormalizedTransaction(**values)  # type: ignore[arg-type]
+
+
+def _decision_from_document(document: Mapping[str, object]) -> ClassificationDecision:
+    values = _without_mongo_id(document)
+    values["transaction_type"] = TransactionType(str(values["transaction_type"]))
+    values["source"] = DecisionSource(str(values["source"]))
+    values["approval_status"] = ApprovalStatus(str(values["approval_status"]))
+    return ClassificationDecision(**values)  # type: ignore[arg-type]
+
+
+def _outbox_from_document(document: Mapping[str, object]) -> OutboxItem:
+    values = _without_mongo_id(document)
+    values["status"] = OutboxStatus(str(values["status"]))
+    return OutboxItem(**values)  # type: ignore[arg-type]
+
+
+def _oauth_from_document(document: Mapping[str, object]) -> OAuthState:
+    return OAuthState(
+        state_hash=str(document["state_hash"]),
+        expires_at=document["expires_at"],  # type: ignore[arg-type]
+    )
+
+
+def _audit_from_document(document: Mapping[str, object]) -> AuditEvent:
+    return AuditEvent(
+        event_type=str(document["event_type"]),
+        payload=document["payload"],  # type: ignore[arg-type]
+        occurred_at=document["occurred_at"],  # type: ignore[arg-type]
+        sequence=int(document["sequence"]),
+    )
+
+
+class _MongoRawRecordRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def add(self, record: RawRecord) -> RawRecord:
+        document = _model_document(record)
+        document["_id"] = record.id
+        try:
+            await self._collection.insert_one(document)
+            return record
+        except DuplicateKeyError:
+            existing = await self.get(record.id)
+            if (
+                existing is not None
+                and replace(existing, ingested_at=record.ingested_at) == record
+            ):
+                return existing
+            raise ImmutableRecordError(f"raw record {record.id!r} is immutable") from None
+
+    async def get(self, record_id: str) -> RawRecord | None:
+        document = await self._collection.find_one({"_id": record_id})
+        return _raw_from_document(document) if document is not None else None
+
+    async def list(
+        self, *, offset: int = 0, limit: int | None = None
+    ) -> tuple[RawRecord, ...]:
+        _validate_page(offset, limit)
+        cursor = self._collection.find({}).sort("_id", ASCENDING).skip(offset)
+        if limit is not None:
+            cursor = cursor.limit(limit)
+        return tuple([_raw_from_document(item) async for item in cursor])
+
+
+class _MongoTransactionRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def add(self, transaction: NormalizedTransaction) -> NormalizedTransaction:
+        document = _transaction_document(transaction)
+        document["_id"] = transaction.id
+        try:
+            await self._collection.insert_one(document)
+            return transaction
+        except DuplicateKeyError:
+            existing = await self.get(transaction.id)
+            if existing == transaction:
+                return existing
+            raise ImmutableRecordError(
+                f"transaction {transaction.id!r} is immutable"
+            ) from None
+
+    async def get(self, transaction_id: str) -> NormalizedTransaction | None:
+        document = await self._collection.find_one({"_id": transaction_id})
+        return _transaction_from_document(document) if document is not None else None
+
+    async def list(
+        self,
+        *,
+        raw_record_id: str | None = None,
+        bank_transaction_id: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> tuple[NormalizedTransaction, ...]:
+        _validate_page(offset, limit)
+        if start_date is not None and end_date is not None and start_date > end_date:
+            raise ValueError("start_date must not be after end_date")
+        query: dict[str, object] = {}
+        if raw_record_id is not None:
+            query["raw_record_id"] = raw_record_id
+        if bank_transaction_id is not None:
+            query["bank_transaction_id"] = bank_transaction_id
+        date_filter: dict[str, str] = {}
+        if start_date is not None:
+            date_filter["$gte"] = start_date.isoformat()
+        if end_date is not None:
+            date_filter["$lte"] = end_date.isoformat()
+        if date_filter:
+            query["transaction_date"] = date_filter
+        cursor = (
+            self._collection.find(query)
+            .sort([("transaction_date", ASCENDING), ("_id", ASCENDING)])
+            .skip(offset)
+        )
+        if limit is not None:
+            cursor = cursor.limit(limit)
+        return tuple([_transaction_from_document(item) async for item in cursor])
+
+
+class _MongoClassificationRepository:
+    def __init__(self, collection, counters) -> None:
+        self._collection = collection
+        self._counters = counters
+
+    async def append(self, decision: ClassificationDecision) -> ClassificationDecision:
+        existing_document = await self._collection.find_one({"_id": decision.id})
+        if existing_document is not None:
+            existing = _decision_from_document(existing_document)
+            if replace(existing, version=decision.version) == decision:
+                return existing
+            raise ImmutableRecordError(
+                f"classification decision {decision.id!r} is append-only"
+            )
+        counter = await self._counters.find_one_and_update(
+            {"_id": f"classification:{decision.transaction_id}"},
+            {"$inc": {"value": 1}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        stored = replace(decision, version=int(counter["value"]))
+        document = _model_document(stored)
+        document["_id"] = stored.id
+        try:
+            await self._collection.insert_one(document)
+            return stored
+        except DuplicateKeyError:
+            existing_document = await self._collection.find_one({"_id": decision.id})
+            if existing_document is not None:
+                existing = _decision_from_document(existing_document)
+                if replace(existing, version=decision.version) == decision:
+                    return existing
+            raise ImmutableRecordError(
+                f"classification decision {decision.id!r} is append-only"
+            ) from None
+
+    async def latest(self, transaction_id: str) -> ClassificationDecision | None:
+        document = await self._collection.find_one(
+            {"transaction_id": transaction_id}, sort=[("version", -1)]
+        )
+        return _decision_from_document(document) if document is not None else None
+
+    async def history(
+        self, transaction_id: str, *, offset: int = 0, limit: int | None = None
+    ) -> tuple[ClassificationDecision, ...]:
+        _validate_page(offset, limit)
+        cursor = (
+            self._collection.find({"transaction_id": transaction_id})
+            .sort("version", ASCENDING)
+            .skip(offset)
+        )
+        if limit is not None:
+            cursor = cursor.limit(limit)
+        return tuple([_decision_from_document(item) async for item in cursor])
+
+
+class _MongoOutboxRepository:
+    _ALLOWED = {
+        OutboxStatus.PENDING: {OutboxStatus.PROCESSING},
+        OutboxStatus.PROCESSING: {
+            OutboxStatus.SUCCEEDED,
+            OutboxStatus.RETRYABLE_FAILED,
+            OutboxStatus.PERMANENT_FAILED,
+        },
+        OutboxStatus.RETRYABLE_FAILED: {OutboxStatus.PROCESSING},
+        OutboxStatus.SUCCEEDED: set(),
+        OutboxStatus.PERMANENT_FAILED: set(),
+    }
+
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def add(self, item: OutboxItem) -> OutboxItem:
+        key = item.idempotency_key or item.id
+        stored = item if item.idempotency_key else replace(item, idempotency_key=key)
+        document = _model_document(stored)
+        document["_id"] = stored.id
+        try:
+            await self._collection.insert_one(document)
+            return stored
+        except DuplicateKeyError:
+            existing_document = await self._collection.find_one(
+                {"idempotency_key": key}
+            )
+            if existing_document is not None:
+                return _outbox_from_document(existing_document)
+            existing = await self.get(stored.id)
+            if existing == stored:
+                return existing
+            raise ImmutableRecordError(f"outbox item {stored.id!r} is immutable") from None
+
+    async def get(self, item_id: str) -> OutboxItem | None:
+        document = await self._collection.find_one({"_id": item_id})
+        return _outbox_from_document(document) if document is not None else None
+
+    async def claim_pending(self, *, limit: int = 1) -> tuple[OutboxItem, ...]:
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        claimed: list[OutboxItem] = []
+        for _ in range(limit):
+            document = await self._collection.find_one_and_update(
+                {"status": OutboxStatus.PENDING.value},
+                {
+                    "$set": {
+                        "status": OutboxStatus.PROCESSING.value,
+                        "updated_at": datetime.now(timezone.utc),
+                    },
+                    "$inc": {"attempt_count": 1},
+                },
+                sort=[("created_at", ASCENDING), ("_id", ASCENDING)],
+                return_document=ReturnDocument.AFTER,
+            )
+            if document is None:
+                break
+            claimed.append(_outbox_from_document(document))
+        return tuple(claimed)
+
+    async def transition(
+        self,
+        item_id: str,
+        status: OutboxStatus,
+        *,
+        updated_at: datetime | None = None,
+        next_attempt_at: datetime | None = None,
+        last_error_code: str | None = None,
+        qbo_entity_id: str | None = None,
+        sync_token: str | None = None,
+    ) -> OutboxItem:
+        current_document = await self._collection.find_one({"_id": item_id})
+        if current_document is None:
+            raise KeyError(item_id)
+        current = _outbox_from_document(current_document)
+        if status not in self._ALLOWED[current.status]:
+            raise InvalidStateTransitionError(
+                f"cannot transition {current.status} to {status}"
+            )
+        updates: dict[str, object] = {
+            "status": status.value,
+            "updated_at": updated_at or datetime.now(timezone.utc),
+            "next_attempt_at": next_attempt_at,
+            "last_error_code": last_error_code,
+        }
+        if qbo_entity_id is not None:
+            updates["qbo_entity_id"] = qbo_entity_id
+        if sync_token is not None:
+            updates["sync_token"] = sync_token
+        document = await self._collection.find_one_and_update(
+            {"_id": item_id, "status": current.status.value},
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+        )
+        if document is None:
+            raise InvalidStateTransitionError(
+                f"outbox item {item_id!r} changed concurrently"
+            )
+        return _outbox_from_document(document)
+
+
+class _MongoOAuthStateRepository:
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    @staticmethod
+    def _hash(state: str) -> str:
+        return sha256(state.encode("utf-8")).hexdigest()
+
+    async def put(self, state: str, *, expires_at: datetime) -> OAuthState:
+        saved = OAuthState(state_hash=self._hash(state), expires_at=expires_at)
+        await self._collection.replace_one(
+            {"_id": saved.state_hash},
+            {
+                "_id": saved.state_hash,
+                "state_hash": saved.state_hash,
+                "expires_at": saved.expires_at,
+            },
+            upsert=True,
+        )
+        return saved
+
+    async def consume(
+        self, state: str, *, now: datetime | None = None
+    ) -> OAuthState | None:
+        state_hash = self._hash(state)
+        document = await self._collection.find_one_and_delete({"_id": state_hash})
+        if document is None:
+            return None
+        saved = _oauth_from_document(document)
+        if saved.expires_at <= (now or datetime.now(timezone.utc)):
+            raise OAuthStateExpiredError("OAuth state has expired")
+        return saved
+
+
+class _MongoAuditRepository:
+    def __init__(self, collection, counters) -> None:
+        self._collection = collection
+        self._counters = counters
+
+    async def append(self, event: AuditEvent) -> AuditEvent:
+        counter = await self._counters.find_one_and_update(
+            {"_id": "audit"},
+            {"$inc": {"value": 1}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        stored = replace(event, sequence=int(counter["value"]))
+        document = _model_document(stored)
+        document["_id"] = stored.sequence
+        await self._collection.insert_one(document)
+        return stored
+
+    async def list(
+        self, *, offset: int = 0, limit: int | None = None
+    ) -> tuple[AuditEvent, ...]:
+        _validate_page(offset, limit)
+        cursor = self._collection.find({}).sort("sequence", ASCENDING).skip(offset)
+        if limit is not None:
+            cursor = cursor.limit(limit)
+        return tuple([_audit_from_document(item) async for item in cursor])
+
+
+class MongoUnitOfWork:
+    """Mongo-backed unit of work.
+
+    The caller owns the client lifecycle. ``from_uri`` is provided for
+    application composition and marks the client as owned by this unit.
+    """
+
+    def __init__(self, client, database_name: str, *, owns_client: bool = False) -> None:
+        if not database_name:
+            raise ValueError("database_name is required")
+        self._client = client
+        self._owns_client = owns_client
+        self.database_name = database_name
+        self._database = client.get_database(
+            database_name,
+            codec_options=CodecOptions(tz_aware=True, tzinfo=timezone.utc),
+        )
+        self._counters = self._database["counters"]
+        self.raw_records = _MongoRawRecordRepository(self._database["raw_records"])
+        self.transactions = _MongoTransactionRepository(self._database["transactions"])
+        self.classifications = _MongoClassificationRepository(
+            self._database["classifications"], self._counters
+        )
+        self.outbox = _MongoOutboxRepository(self._database["outbox"])
+        self.oauth_states = _MongoOAuthStateRepository(self._database["oauth_states"])
+        self.audit = _MongoAuditRepository(self._database["audit_events"], self._counters)
+
+    @classmethod
+    def from_uri(cls, uri: str, database_name: str) -> "MongoUnitOfWork":
+        from pymongo import AsyncMongoClient
+
+        client = AsyncMongoClient(
+            uri,
+            serverSelectionTimeoutMS=5_000,
+            tz_aware=True,
+        )
+        return cls(client, database_name, owns_client=True)
+
+    async def create_indexes(self) -> None:
+        await self._database["raw_records"].create_index(
+            [("raw_row_sha256", ASCENDING)],
+            name="raw_row_sha256",
+        )
+        await self._database["raw_records"].create_index(
+            [
+                ("source_file_sha256", ASCENDING),
+                ("source_sheet", ASCENDING),
+                ("source_row_number", ASCENDING),
+            ],
+            name="source_lineage",
+        )
+        await self._database["transactions"].create_index(
+            [("bank_transaction_id", ASCENDING)],
+            unique=True,
+            name="bank_transaction_id",
+        )
+        await self._database["transactions"].create_index(
+            [("raw_record_id", ASCENDING)], name="raw_record_id"
+        )
+        await self._database["transactions"].create_index(
+            [("transaction_date", ASCENDING)], name="transaction_date"
+        )
+        await self._database["classifications"].create_index(
+            [("transaction_id", ASCENDING), ("version", ASCENDING)],
+            unique=True,
+            name="transaction_version_unique",
+        )
+        await self._database["outbox"].create_index(
+            [("idempotency_key", ASCENDING)],
+            unique=True,
+            name="idempotency_key_unique",
+        )
+        await self._database["outbox"].create_index(
+            [("status", ASCENDING), ("next_attempt_at", ASCENDING)],
+            name="status_next_attempt",
+        )
+        await self._database["oauth_states"].create_index(
+            [("expires_at", ASCENDING)],
+            expireAfterSeconds=0,
+            name="expires_at_ttl",
+        )
+        await self._database["audit_events"].create_index(
+            [("sequence", ASCENDING)], unique=True, name="sequence_unique"
+        )
+
+    async def index_information(self) -> dict[str, dict[str, dict[str, Any]]]:
+        names = (
+            "raw_records",
+            "transactions",
+            "classifications",
+            "outbox",
+            "oauth_states",
+            "audit_events",
+        )
+        return {
+            name: await self._database[name].index_information() for name in names
+        }
+
+    async def ping(self) -> bool:
+        result = await self._database.command({"ping": 1})
+        return result.get("ok") == 1
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.close()
+            self._owns_client = False
+
+    async def __aenter__(self) -> "MongoUnitOfWork":
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc: object, traceback: object
+    ) -> None:
+        return None

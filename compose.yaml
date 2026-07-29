@@ -1,0 +1,38 @@
+name: finz-ledger-bridge
+
+services:
+  mongodb:
+    image: mongo:8
+    container_name: finz-mongodb
+    restart: unless-stopped
+    labels:
+      com.finz.project: ledger-bridge
+      com.finz.component: local-mongodb
+    ports:
+      - "127.0.0.1:${FINZ_MONGODB_PORT:-27017}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${FINZ_MONGO_ROOT_USERNAME:?set by scripts/ensure_local_mongodb_secrets.py}
+      MONGO_INITDB_ROOT_PASSWORD: ${FINZ_MONGO_ROOT_PASSWORD:?set by scripts/ensure_local_mongodb_secrets.py}
+      FINZ_MONGO_APP_USERNAME: ${FINZ_MONGO_APP_USERNAME:?set by scripts/ensure_local_mongodb_secrets.py}
+      FINZ_MONGO_APP_PASSWORD: ${FINZ_MONGO_APP_PASSWORD:?set by scripts/ensure_local_mongodb_secrets.py}
+      FINZ_MONGO_APP_DATABASE: ${FINZ_MONGO_APP_DATABASE:-finz_ledger_bridge}
+    volumes:
+      - finz_mongodb_data:/data/db
+      - ./docker/mongo/init/01-create-app-user.js:/docker-entrypoint-initdb.d/01-create-app-user.js:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet --host 127.0.0.1 --port 27017 --username \"$$MONGO_INITDB_ROOT_USERNAME\" --password \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval \"quit(db.adminCommand('ping').ok ? 0 : 2)\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  finz_mongodb_data:
+    name: finz_mongodb_data
+    labels:
+      com.finz.project: ledger-bridge
+
