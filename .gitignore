@@ -16,6 +16,8 @@ node_modules/
 frontend/dist/
 *.tsbuildinfo
 tmp/
+.worktrees/
+.superpowers/
 
 # Office temporary files
 ~$*.xlsx
