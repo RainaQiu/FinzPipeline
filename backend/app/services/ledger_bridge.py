@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
-from typing import Mapping
+from secrets import token_urlsafe
+from typing import Callable, Mapping
 from uuid import uuid4
 
 from app.domain.classification import (
@@ -47,6 +48,7 @@ SUPPORTED_MEDIA_TYPES = frozenset(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
 )
+PROCESSING_CLAIM_TIMEOUT = timedelta(minutes=5)
 
 
 class LedgerBridgeError(Exception):
@@ -85,8 +87,14 @@ class InvalidReconciliationError(LedgerBridgeError):
 class LedgerBridgeService:
     """Coordinate domain services and repositories without transport concerns."""
 
-    def __init__(self, unit_of_work: UnitOfWork) -> None:
+    def __init__(
+        self,
+        unit_of_work: UnitOfWork,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.unit_of_work = unit_of_work
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def create_upload(
         self, *, filename: str, media_type: str, data: bytes
@@ -156,9 +164,21 @@ class LedgerBridgeService:
             upload = await self._require_upload(uow, upload_id)
             if upload.status == "completed":
                 raise InvalidStateError("The upload has already been processed.")
+            if upload.status == "processing":
+                assert upload.processing_started_at is not None
+                if (
+                    self._clock() - upload.processing_started_at
+                    < PROCESSING_CLAIM_TIMEOUT
+                ):
+                    raise InvalidStateError(
+                        "The upload is already being processed."
+                    )
+            processing_token = token_urlsafe(32)
             processing_upload = replace(
                 upload,
                 status="processing",
+                processing_started_at=self._clock(),
+                processing_token=processing_token,
                 completed_at=None,
                 error_summary=(),
             )
@@ -166,6 +186,7 @@ class LedgerBridgeService:
                 await uow.uploads.transition_status(
                     processing_upload,
                     expected_status=upload.status,
+                    expected_token=upload.processing_token,
                 )
             except InvalidStateTransitionError as error:
                 raise InvalidStateError(
@@ -254,6 +275,8 @@ class LedgerBridgeService:
             completed_upload = replace(
                 upload,
                 status="completed",
+                processing_started_at=None,
+                processing_token=None,
                 mapping_version=1,
                 row_count=len(batch.raw_records),
                 completed_at=completed_at,
@@ -269,6 +292,7 @@ class LedgerBridgeService:
                 await uow.uploads.transition_status(
                     completed_upload,
                     expected_status="processing",
+                    expected_token=processing_token,
                 )
                 await self._append_audit_best_effort(
                     uow,
@@ -279,17 +303,20 @@ class LedgerBridgeService:
                     ),
                 )
             return {"id": upload.id, "status": completed_upload.status, "counts": counts}
-        except Exception as error:
+        except BaseException as error:
             async with self.unit_of_work as uow:
                 try:
                     await uow.uploads.transition_status(
                         replace(
                             upload,
                             status="failed",
+                            processing_started_at=None,
+                            processing_token=None,
                             completed_at=datetime.now(timezone.utc),
                             error_summary=(type(error).__name__,),
                         ),
                         expected_status="processing",
+                        expected_token=processing_token,
                     )
                 except InvalidStateTransitionError:
                     pass

@@ -280,7 +280,7 @@ class _InMemoryUploadRepository:
     _ALLOWED = {
         "uploaded": {"processing"},
         "failed": {"processing"},
-        "processing": {"completed", "failed"},
+        "processing": {"processing", "completed", "failed"},
         "completed": set(),
     }
 
@@ -303,7 +303,11 @@ class _InMemoryUploadRepository:
             return self._records.get(upload_id)
 
     async def transition_status(
-        self, upload: UploadRecord, *, expected_status: str
+        self,
+        upload: UploadRecord,
+        *,
+        expected_status: str,
+        expected_token: str | None = None,
     ) -> UploadRecord:
         async with self._lock:
             existing = self._records.get(upload.id)
@@ -329,7 +333,13 @@ class _InMemoryUploadRepository:
                 )
             if (
                 existing.status != expected_status
+                or existing.processing_token != expected_token
                 or upload.status not in self._ALLOWED.get(expected_status, set())
+                or (
+                    expected_status == "processing"
+                    and upload.status == "processing"
+                    and upload.processing_token == expected_token
+                )
             ):
                 raise InvalidStateTransitionError(
                     f"upload {upload.id!r} cannot transition "

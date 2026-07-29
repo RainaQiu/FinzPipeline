@@ -140,7 +140,11 @@ class UploadRepository(Protocol):
     async def get(self, upload_id: str) -> UploadRecord | None: ...
 
     async def transition_status(
-        self, upload: UploadRecord, *, expected_status: str
+        self,
+        upload: UploadRecord,
+        *,
+        expected_status: str,
+        expected_token: str | None = None,
     ) -> UploadRecord: ...
 
 

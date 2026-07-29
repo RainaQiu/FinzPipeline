@@ -474,7 +474,7 @@ class _MongoUploadRepository:
     _ALLOWED = {
         "uploaded": {"processing"},
         "failed": {"processing"},
-        "processing": {"completed", "failed"},
+        "processing": {"processing", "completed", "failed"},
         "completed": set(),
     }
 
@@ -498,9 +498,20 @@ class _MongoUploadRepository:
         return _upload_from_document(document) if document is not None else None
 
     async def transition_status(
-        self, upload: UploadRecord, *, expected_status: str
+        self,
+        upload: UploadRecord,
+        *,
+        expected_status: str,
+        expected_token: str | None = None,
     ) -> UploadRecord:
-        if upload.status not in self._ALLOWED.get(expected_status, set()):
+        if (
+            upload.status not in self._ALLOWED.get(expected_status, set())
+            or (
+                expected_status == "processing"
+                and upload.status == "processing"
+                and upload.processing_token == expected_token
+            )
+        ):
             raise InvalidStateTransitionError(
                 f"upload {upload.id!r} cannot transition "
                 f"from {expected_status!r} to {upload.status!r}"
@@ -510,6 +521,7 @@ class _MongoUploadRepository:
         source_filter = {
             "_id": upload.id,
             "status": expected_status,
+            "processing_token": expected_token,
             "original_filename": upload.original_filename,
             "media_type": upload.media_type,
             "sha256": upload.sha256,

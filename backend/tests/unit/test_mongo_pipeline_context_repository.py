@@ -101,7 +101,14 @@ async def test_upload_transition_uses_one_atomic_expected_status_filter():
         created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
     )
     await repository.add(upload)
-    processing = replace(upload, status="processing")
+    processing = replace(
+        upload,
+        status="processing",
+        processing_started_at=datetime(
+            2026, 4, 1, 0, 30, tzinfo=timezone.utc
+        ),
+        processing_token="finz-test-mongo-owner",
+    )
 
     assert (
         await repository.transition_status(
@@ -112,6 +119,7 @@ async def test_upload_transition_uses_one_atomic_expected_status_filter():
     assert collection.last_transition_query == {
         "_id": upload.id,
         "status": "uploaded",
+        "processing_token": None,
         "original_filename": upload.original_filename,
         "media_type": upload.media_type,
         "sha256": upload.sha256,

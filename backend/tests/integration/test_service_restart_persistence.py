@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from dataclasses import replace
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -19,6 +20,8 @@ from tests.fixtures.golden_dataset import (
     DATASET_NAME,
     dataset_bytes,
 )
+
+EXPECTED_PROCESSING_CLAIM_TIMEOUT = timedelta(minutes=5)
 
 
 class _FailOnceClassificationRepository:
@@ -55,12 +58,16 @@ class _FailOnceTerminalUploadRepository:
     async def get(self, upload_id):
         return await self._delegate.get(upload_id)
 
-    async def transition_status(self, upload, *, expected_status):
+    async def transition_status(
+        self, upload, *, expected_status, expected_token=None
+    ):
         if not self._failed and upload.status == "completed":
             self._failed = True
             raise RuntimeError("terminal publish failed")
         return await self._delegate.transition_status(
-            upload, expected_status=expected_status
+            upload,
+            expected_status=expected_status,
+            expected_token=expected_token,
         )
 
 
@@ -82,9 +89,13 @@ class _BarrierUploadRepository:
             await self._both_read.wait()
         return upload
 
-    async def transition_status(self, upload, *, expected_status):
+    async def transition_status(
+        self, upload, *, expected_status, expected_token=None
+    ):
         return await self._delegate.transition_status(
-            upload, expected_status=expected_status
+            upload,
+            expected_status=expected_status,
+            expected_token=expected_token,
         )
 
 
@@ -100,6 +111,29 @@ class _FailingAuditRepository:
 
     async def list(self, *, offset=0, limit=None):
         return await self._delegate.list(offset=offset, limit=limit)
+
+
+class _BlockingClassificationRepository:
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self._blocked = False
+
+    async def append(self, decision):
+        if not self._blocked:
+            self._blocked = True
+            self.entered.set()
+            await self.release.wait()
+        return await self._delegate.append(decision)
+
+    async def latest(self, transaction_id):
+        return await self._delegate.latest(transaction_id)
+
+    async def history(self, transaction_id, *, offset=0, limit=None):
+        return await self._delegate.history(
+            transaction_id, offset=offset, limit=limit
+        )
 
 
 async def _create_challenge_upload(service: LedgerBridgeService):
@@ -445,3 +479,97 @@ async def test_duplicate_upload_gets_clear_transaction_ownership_conflict():
 
     assert (await service.get_upload(second["id"]))["status"] == "failed"
     assert (await service.list_transactions(limit=250))["total"] == 195
+
+
+@pytest.mark.asyncio
+async def test_cancelled_processor_releases_claim_and_retry_completes():
+    uow = InMemoryUnitOfWork()
+    blocking = _BlockingClassificationRepository(uow.classifications)
+    uow.classifications = blocking
+    service = LedgerBridgeService(uow)
+    upload = await _create_challenge_upload(service)
+    task = asyncio.create_task(
+        service.process_upload(upload["id"], BRIGHTFIX_MAPPING)
+    )
+    await blocking.entered.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    cancelled = await uow.uploads.get(upload["id"])
+    assert cancelled is not None
+    assert cancelled.status == "failed"
+    assert cancelled.error_summary == ("CancelledError",)
+    assert cancelled.processing_started_at is None
+    assert cancelled.processing_token is None
+    cancelled_view = await service.get_upload(upload["id"])
+    assert "processing_started_at" not in cancelled_view
+    assert "processing_token" not in cancelled_view
+
+    restarted = LedgerBridgeService(uow)
+    completed = await restarted.process_upload(
+        upload["id"], BRIGHTFIX_MAPPING
+    )
+    assert completed["status"] == "completed"
+    assert "processing_started_at" not in completed
+    assert "processing_token" not in completed
+    assert (await restarted.list_transactions(limit=250))["total"] == 195
+
+
+@pytest.mark.asyncio
+async def test_stale_processing_claim_is_reclaimed_at_timeout_boundary():
+    fixed_now = datetime(2026, 7, 30, 12, tzinfo=timezone.utc)
+    uow = InMemoryUnitOfWork()
+    service = LedgerBridgeService(uow, clock=lambda: fixed_now)
+    upload_view = await _create_challenge_upload(service)
+    upload = await uow.uploads.get(upload_view["id"])
+    assert upload is not None
+    stale = replace(
+        upload,
+        status="processing",
+        processing_started_at=(
+            fixed_now - EXPECTED_PROCESSING_CLAIM_TIMEOUT
+        ),
+        processing_token="finz-test-crashed-worker-token",
+    )
+    await uow.uploads.transition_status(
+        stale, expected_status="uploaded"
+    )
+
+    restarted = LedgerBridgeService(uow, clock=lambda: fixed_now)
+    completed = await restarted.process_upload(
+        upload.id, BRIGHTFIX_MAPPING
+    )
+
+    assert completed["status"] == "completed"
+    assert (await restarted.list_transactions(limit=250))["total"] == 195
+
+
+@pytest.mark.asyncio
+async def test_fresh_processing_claim_remains_owned_until_timeout():
+    fixed_now = datetime(2026, 7, 30, 12, tzinfo=timezone.utc)
+    uow = InMemoryUnitOfWork()
+    service = LedgerBridgeService(uow, clock=lambda: fixed_now)
+    upload_view = await _create_challenge_upload(service)
+    upload = await uow.uploads.get(upload_view["id"])
+    assert upload is not None
+    fresh = replace(
+        upload,
+        status="processing",
+        processing_started_at=(
+            fixed_now
+            - EXPECTED_PROCESSING_CLAIM_TIMEOUT
+            + timedelta(milliseconds=1)
+        ),
+        processing_token="finz-test-active-worker-token",
+    )
+    await uow.uploads.transition_status(
+        fresh, expected_status="uploaded"
+    )
+
+    restarted = LedgerBridgeService(uow, clock=lambda: fixed_now)
+    with pytest.raises(InvalidStateError, match="already being processed"):
+        await restarted.process_upload(upload.id, BRIGHTFIX_MAPPING)
+
+    assert await uow.uploads.get(upload.id) == fresh

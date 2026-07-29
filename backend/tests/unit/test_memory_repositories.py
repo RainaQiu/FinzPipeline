@@ -450,10 +450,19 @@ async def test_upload_status_transition_is_atomic_and_preserves_source_fields():
         created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
     )
     await uow.uploads.add(upload)
-    processing = replace(upload, status="processing")
-    completed = replace(
+    processing_started_at = datetime(2026, 4, 1, 0, 30, tzinfo=timezone.utc)
+    processing_token = "finz-test-processing-owner"
+    processing = replace(
         upload,
+        status="processing",
+        processing_started_at=processing_started_at,
+        processing_token=processing_token,
+    )
+    completed = replace(
+        processing,
         status="completed",
+        processing_started_at=None,
+        processing_token=None,
         mapping_version=1,
         row_count=1,
         completed_at=datetime(2026, 4, 1, 1, tzinfo=timezone.utc),
@@ -467,7 +476,9 @@ async def test_upload_status_transition_is_atomic_and_preserves_source_fields():
     )
     assert (
         await uow.uploads.transition_status(
-            completed, expected_status="processing"
+            completed,
+            expected_status="processing",
+            expected_token=processing_token,
         )
         == completed
     )
@@ -475,7 +486,12 @@ async def test_upload_status_transition_is_atomic_and_preserves_source_fields():
 
     with pytest.raises(InvalidStateTransitionError):
         await uow.uploads.transition_status(
-            replace(completed, status="processing"),
+            replace(
+                completed,
+                status="processing",
+                processing_started_at=processing_started_at,
+                processing_token="finz-test-new-owner",
+            ),
             expected_status="completed",
         )
 
@@ -489,14 +505,26 @@ async def test_upload_status_transition_is_atomic_and_preserves_source_fields():
     for index, changes in enumerate(tampered_values):
         candidate = replace(upload, id=f"{upload.id}-{index}")
         await uow.uploads.add(candidate)
-        candidate_processing = replace(candidate, status="processing")
+        candidate_processing = replace(
+            candidate,
+            status="processing",
+            processing_started_at=processing_started_at,
+            processing_token=f"finz-test-processing-owner-{index}",
+        )
         await uow.uploads.transition_status(
             candidate_processing, expected_status="uploaded"
         )
         with pytest.raises(ImmutableRecordError):
             await uow.uploads.transition_status(
-                replace(candidate_processing, status="completed", **changes),
+                replace(
+                    candidate_processing,
+                    status="completed",
+                    processing_started_at=None,
+                    processing_token=None,
+                    **changes,
+                ),
                 expected_status="processing",
+                expected_token=candidate_processing.processing_token,
             )
 
 
@@ -512,7 +540,14 @@ async def test_only_one_concurrent_upload_processor_wins_compare_and_set():
         created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
     )
     await uow.uploads.add(upload)
-    processing = replace(upload, status="processing")
+    processing = replace(
+        upload,
+        status="processing",
+        processing_started_at=datetime(
+            2026, 4, 1, 0, 30, tzinfo=timezone.utc
+        ),
+        processing_token="finz-test-concurrent-owner",
+    )
 
     results = await asyncio.gather(
         *(
@@ -529,6 +564,73 @@ async def test_only_one_concurrent_upload_processor_wins_compare_and_set():
         isinstance(result, InvalidStateTransitionError) for result in results
     ) == 1
     assert await uow.uploads.get(upload.id) == processing
+
+
+@pytest.mark.asyncio
+async def test_reclaimed_upload_claim_fences_the_old_worker():
+    uow = InMemoryUnitOfWork()
+    upload = UploadRecord(
+        id="finz-test-upload-fencing",
+        original_filename="finz-test.csv",
+        media_type="text/csv",
+        sha256="f" * 64,
+        data=b"amount\n100\n",
+        created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+    )
+    await uow.uploads.add(upload)
+    old_claim = replace(
+        upload,
+        status="processing",
+        processing_started_at=datetime(
+            2026, 4, 1, 0, 10, tzinfo=timezone.utc
+        ),
+        processing_token="finz-test-old-owner",
+    )
+    await uow.uploads.transition_status(
+        old_claim, expected_status="uploaded"
+    )
+    new_claim = replace(
+        old_claim,
+        processing_started_at=datetime(
+            2026, 4, 1, 0, 20, tzinfo=timezone.utc
+        ),
+        processing_token="finz-test-new-owner",
+    )
+
+    assert (
+        await uow.uploads.transition_status(
+            new_claim,
+            expected_status="processing",
+            expected_token=old_claim.processing_token,
+        )
+        == new_claim
+    )
+    old_completion = replace(
+        old_claim,
+        status="completed",
+        processing_started_at=None,
+        processing_token=None,
+    )
+    with pytest.raises(InvalidStateTransitionError):
+        await uow.uploads.transition_status(
+            old_completion,
+            expected_status="processing",
+            expected_token=old_claim.processing_token,
+        )
+    new_completion = replace(
+        new_claim,
+        status="completed",
+        processing_started_at=None,
+        processing_token=None,
+    )
+    assert (
+        await uow.uploads.transition_status(
+            new_completion,
+            expected_status="processing",
+            expected_token=new_claim.processing_token,
+        )
+        == new_completion
+    )
 
 
 @pytest.mark.asyncio

@@ -73,6 +73,69 @@ def test_upload_record_rejects_non_string_error_summary_items():
         )
 
 
+def test_upload_processing_claim_fields_are_paired_private_and_canonical():
+    source_time = datetime(
+        2026,
+        7,
+        30,
+        12,
+        0,
+        0,
+        123456,
+        tzinfo=timezone(timedelta(hours=8)),
+    )
+    processing = UploadRecord(
+        id="upload-processing",
+        original_filename="source.csv",
+        media_type="text/csv",
+        sha256="a" * 64,
+        data=b"source",
+        created_at=source_time,
+        status="processing",
+        processing_started_at=source_time,
+        processing_token="unguessable-test-owner-token",
+    )
+
+    assert processing.processing_started_at == datetime(
+        2026, 7, 30, 4, 0, 0, 123000, tzinfo=timezone.utc
+    )
+    assert processing.processing_token == "unguessable-test-owner-token"
+    assert "unguessable-test-owner-token" not in repr(processing)
+
+    invalid_values = (
+        {"status": "processing"},
+        {
+            "status": "processing",
+            "processing_started_at": source_time,
+        },
+        {
+            "status": "processing",
+            "processing_token": "owner",
+        },
+        {
+            "status": "processing",
+            "processing_started_at": source_time,
+            "processing_token": "",
+        },
+        {
+            "status": "completed",
+            "processing_started_at": source_time,
+            "processing_token": "owner",
+        },
+    )
+    for values in invalid_values:
+        with pytest.raises((TypeError, ValueError)):
+            UploadRecord(
+                id="upload-invalid-claim",
+                original_filename="source.csv",
+                media_type="text/csv",
+                sha256="a" * 64,
+                data=b"source",
+                created_at=source_time,
+                **values,
+            )
+
+
 def test_pipeline_context_freezes_non_negative_integer_counts():
     """Persisted workflow counts must not follow caller mutation."""
     counts = {"raw": 2, "unique": 1}

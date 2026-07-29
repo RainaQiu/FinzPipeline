@@ -289,10 +289,17 @@ async def test_upload_bytes_round_trip_and_orchestration_records_persist(mongo_u
 async def test_upload_status_update_and_transaction_context_lookup_are_safe(mongo_uow):
     upload = _upload("finz-test-upload-status")
     await mongo_uow.uploads.add(upload)
-    processing = replace(upload, status="processing")
-    completed = replace(
+    processing = replace(
         upload,
+        status="processing",
+        processing_started_at=datetime(2026, 4, 1, 0, 30, tzinfo=timezone.utc),
+        processing_token="finz-test-processing-token",
+    )
+    completed = replace(
+        processing,
         status="completed",
+        processing_started_at=None,
+        processing_token=None,
         mapping_version=1,
         row_count=2,
         completed_at=datetime(2026, 4, 1, 1, tzinfo=timezone.utc),
@@ -318,7 +325,9 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
     )
     assert (
         await mongo_uow.uploads.transition_status(
-            completed, expected_status="processing"
+            completed,
+            expected_status="processing",
+            expected_token=processing.processing_token,
         )
         == completed
     )
@@ -326,7 +335,12 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
     with pytest.raises(ImmutableRecordError):
         second_upload = _upload("finz-test-upload-status-tamper")
         await mongo_uow.uploads.add(second_upload)
-        second_processing = replace(second_upload, status="processing")
+        second_processing = replace(
+            second_upload,
+            status="processing",
+            processing_started_at=datetime(2026, 4, 1, 0, 30, tzinfo=timezone.utc),
+            processing_token="finz-test-tamper-token",
+        )
         await mongo_uow.uploads.transition_status(
             second_processing, expected_status="uploaded"
         )
@@ -334,13 +348,23 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
             replace(
                 second_processing,
                 status="completed",
+                processing_started_at=None,
+                processing_token=None,
                 data=b"amount\n999\n",
             ),
             expected_status="processing",
+            expected_token=second_processing.processing_token,
         )
     with pytest.raises(InvalidStateTransitionError):
         await mongo_uow.uploads.transition_status(
-            replace(completed, status="processing"),
+            replace(
+                completed,
+                status="processing",
+                processing_started_at=datetime(
+                    2026, 4, 1, 2, tzinfo=timezone.utc
+                ),
+                processing_token="finz-test-illegal-restart-token",
+            ),
             expected_status="completed",
         )
 

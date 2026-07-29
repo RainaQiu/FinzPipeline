@@ -30,6 +30,8 @@ class UploadRecord:
     data: bytes
     created_at: datetime
     status: str = "uploaded"
+    processing_started_at: datetime | None = None
+    processing_token: str | None = field(default=None, repr=False)
     mapping_version: int = 0
     row_count: int = 0
     completed_at: datetime | None = None
@@ -43,6 +45,32 @@ class UploadRecord:
         object.__setattr__(
             self, "created_at", _canonical_datetime(self.created_at, "created_at")
         )
+        if self.processing_started_at is not None:
+            object.__setattr__(
+                self,
+                "processing_started_at",
+                _canonical_datetime(
+                    self.processing_started_at, "processing_started_at"
+                ),
+            )
+        if self.status == "processing":
+            if self.processing_started_at is None:
+                raise ValueError(
+                    "processing_started_at is required while processing"
+                )
+            if not isinstance(self.processing_token, str):
+                raise TypeError("processing_token must be a string")
+            if not self.processing_token.strip():
+                raise ValueError(
+                    "processing_token is required while processing"
+                )
+        elif (
+            self.processing_started_at is not None
+            or self.processing_token is not None
+        ):
+            raise ValueError(
+                "processing claim fields are only allowed while processing"
+            )
         if self.completed_at is not None:
             object.__setattr__(
                 self,
