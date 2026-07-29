@@ -29,7 +29,11 @@ from app.domain.demo import (
 )
 from app.domain.transactions import Direction, NormalizedTransaction, RawRecord
 from app.repositories.mongo import MongoUnitOfWork
-from app.repositories.protocols import AuditEvent, ImmutableRecordError
+from app.repositories.protocols import (
+    AuditEvent,
+    ImmutableRecordError,
+    InvalidStateTransitionError,
+)
 
 
 pytestmark = [
@@ -104,6 +108,7 @@ async def test_cloud_repository_indexes_enforce_expiry_and_uniqueness(mongo_uow)
     assert indexes["oauth_states"]["expires_at_ttl"]["expireAfterSeconds"] == 0
     assert indexes["uploads"]["id_unique"]["unique"] is True
     assert "transaction_ids" in indexes["pipeline_contexts"]
+    assert indexes["pipeline_contexts"]["transaction_ids"]["unique"] is True
     assert indexes["sync_runs"]["id_unique"]["unique"] is True
     assert indexes["reconciliation_runs"]["id_unique"]["unique"] is True
     assert indexes["qbo_connections"]["singleton_unique"]["unique"] is True
@@ -284,6 +289,7 @@ async def test_upload_bytes_round_trip_and_orchestration_records_persist(mongo_u
 async def test_upload_status_update_and_transaction_context_lookup_are_safe(mongo_uow):
     upload = _upload("finz-test-upload-status")
     await mongo_uow.uploads.add(upload)
+    processing = replace(upload, status="processing")
     completed = replace(
         upload,
         status="completed",
@@ -304,11 +310,38 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
         updated_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
     )
 
-    assert await mongo_uow.uploads.update_status(completed) == completed
+    assert (
+        await mongo_uow.uploads.transition_status(
+            processing, expected_status="uploaded"
+        )
+        == processing
+    )
+    assert (
+        await mongo_uow.uploads.transition_status(
+            completed, expected_status="processing"
+        )
+        == completed
+    )
     assert await mongo_uow.uploads.get(upload.id) == completed
     with pytest.raises(ImmutableRecordError):
-        await mongo_uow.uploads.update_status(
-            replace(completed, data=b"amount\n999\n")
+        second_upload = _upload("finz-test-upload-status-tamper")
+        await mongo_uow.uploads.add(second_upload)
+        second_processing = replace(second_upload, status="processing")
+        await mongo_uow.uploads.transition_status(
+            second_processing, expected_status="uploaded"
+        )
+        await mongo_uow.uploads.transition_status(
+            replace(
+                second_processing,
+                status="completed",
+                data=b"amount\n999\n",
+            ),
+            expected_status="processing",
+        )
+    with pytest.raises(InvalidStateTransitionError):
+        await mongo_uow.uploads.transition_status(
+            replace(completed, status="processing"),
+            expected_status="completed",
         )
 
     await mongo_uow.pipeline_contexts.upsert(context)
@@ -327,6 +360,20 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
             "finz-test.transaction"
         )
         is None
+    )
+    with pytest.raises(ValueError, match="another upload"):
+        await mongo_uow.pipeline_contexts.upsert(
+            replace(
+                context,
+                id="finz-test-context-overlap",
+                upload_id="finz-test-upload-overlap",
+            )
+        )
+    assert (
+        await mongo_uow.pipeline_contexts.get_for_transaction(
+            "finz-test.transaction.$literal"
+        )
+        == context
     )
 
 

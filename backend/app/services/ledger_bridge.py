@@ -20,7 +20,12 @@ from app.domain.demo import (
     SyncRunRecord,
     UploadRecord,
 )
-from app.repositories.protocols import AuditEvent, UnitOfWork
+from app.repositories.protocols import (
+    AuditEvent,
+    InvalidStateTransitionError,
+    TransactionContextConflictError,
+    UnitOfWork,
+)
 from app.services.classification import (
     AccountingInvariantError,
     ClassificationContext,
@@ -121,7 +126,8 @@ class LedgerBridgeService:
         )
         async with self.unit_of_work as uow:
             await uow.uploads.add(upload)
-            await uow.audit.append(
+            await self._append_audit_best_effort(
+                uow,
                 AuditEvent(
                     "upload.created",
                     {"upload_id": upload_id, "sha256": upload.sha256},
@@ -134,18 +140,38 @@ class LedgerBridgeService:
         async with self.unit_of_work as uow:
             upload = await self._require_upload(uow, upload_id)
             context = await uow.pipeline_contexts.get(upload_id)
-        return self._upload_view(upload, context)
+        published_context = (
+            context
+            if upload.status == "completed"
+            and context is not None
+            and context.status == "completed"
+            else None
+        )
+        return self._upload_view(upload, published_context)
 
     async def process_upload(
         self, upload_id: str, mapping: IngestionMapping
     ) -> dict[str, object]:
         async with self.unit_of_work as uow:
             upload = await self._require_upload(uow, upload_id)
-        if upload.status == "completed":
-            raise InvalidStateError("The upload has already been processed.")
-        upload = replace(upload, status="processing")
-        async with self.unit_of_work as uow:
-            await uow.uploads.update_status(upload)
+            if upload.status == "completed":
+                raise InvalidStateError("The upload has already been processed.")
+            processing_upload = replace(
+                upload,
+                status="processing",
+                completed_at=None,
+                error_summary=(),
+            )
+            try:
+                await uow.uploads.transition_status(
+                    processing_upload,
+                    expected_status=upload.status,
+                )
+            except InvalidStateTransitionError as error:
+                raise InvalidStateError(
+                    "The upload is already being processed or has completed."
+                ) from error
+        upload = processing_upload
         try:
             batch = ingest_rows(upload.data, upload.original_filename, mapping)
             normalized = tuple(
@@ -216,7 +242,7 @@ class LedgerBridgeService:
             }
             completed_at = datetime.now(timezone.utc)
             context = PipelineContext(
-                id=uuid4().hex,
+                id=upload.id,
                 upload_id=upload.id,
                 status="completed",
                 transaction_statuses=transaction_statuses,
@@ -240,25 +266,41 @@ class LedgerBridgeService:
                 for decision in decisions:
                     await uow.classifications.append(decision)
                 await uow.pipeline_contexts.upsert(context)
-                await uow.uploads.update_status(completed_upload)
-                await uow.audit.append(
+                await uow.uploads.transition_status(
+                    completed_upload,
+                    expected_status="processing",
+                )
+                await self._append_audit_best_effort(
+                    uow,
                     AuditEvent(
                         "upload.processed",
                         {"upload_id": upload.id, "counts": counts},
                         datetime.now(timezone.utc),
-                    )
+                    ),
                 )
             return {"id": upload.id, "status": completed_upload.status, "counts": counts}
         except Exception as error:
             async with self.unit_of_work as uow:
-                await uow.uploads.update_status(
-                    replace(
-                        upload,
-                        status="failed",
-                        completed_at=datetime.now(timezone.utc),
-                        error_summary=(type(error).__name__,),
+                try:
+                    await uow.uploads.transition_status(
+                        replace(
+                            upload,
+                            status="failed",
+                            completed_at=datetime.now(timezone.utc),
+                            error_summary=(type(error).__name__,),
+                        ),
+                        expected_status="processing",
                     )
-                )
+                except InvalidStateTransitionError:
+                    pass
+            if isinstance(error, TransactionContextConflictError):
+                raise InvalidStateError(
+                    "One or more transactions already belong to another upload."
+                ) from error
+            if isinstance(error, InvalidStateTransitionError):
+                raise InvalidStateError(
+                    "The upload state changed before processing could publish."
+                ) from error
             raise
 
     async def list_transactions(
@@ -277,6 +319,9 @@ class LedgerBridgeService:
             transactions = await uow.transactions.list()
             enriched = []
             for transaction in transactions:
+                context = await self._published_context(uow, transaction.id)
+                if context is None:
+                    continue
                 decision = await uow.classifications.latest(transaction.id)
                 if month and transaction.transaction_date.strftime("%Y-%m") != month:
                     continue
@@ -286,9 +331,6 @@ class LedgerBridgeService:
                     continue
                 if account and decision.account_number != account:
                     continue
-                context = await uow.pipeline_contexts.get_for_transaction(
-                    transaction.id
-                )
                 duplicate_status = self._duplicate_status(context, transaction.id)
                 if duplicate and duplicate_status != duplicate:
                     continue
@@ -318,10 +360,10 @@ class LedgerBridgeService:
     async def get_transaction(self, transaction_id: str) -> dict[str, object]:
         async with self.unit_of_work as uow:
             transaction = await uow.transactions.get(transaction_id)
-            if transaction is None:
+            context = await self._published_context(uow, transaction_id)
+            if transaction is None or context is None:
                 raise ResourceNotFoundError("Transaction not found.")
             decision = await uow.classifications.latest(transaction_id)
-            context = await uow.pipeline_contexts.get_for_transaction(transaction_id)
         return self._transaction_view(
             transaction,
             decision,
@@ -332,11 +374,11 @@ class LedgerBridgeService:
     async def get_lineage(self, transaction_id: str) -> dict[str, object]:
         async with self.unit_of_work as uow:
             transaction = await uow.transactions.get(transaction_id)
-            if transaction is None:
+            context = await self._published_context(uow, transaction_id)
+            if transaction is None or context is None:
                 raise ResourceNotFoundError("Transaction not found.")
             raw = await uow.raw_records.get(transaction.raw_record_id)
             history = await uow.classifications.history(transaction_id)
-            context = await uow.pipeline_contexts.get_for_transaction(transaction_id)
         return {
             "transaction_id": transaction_id,
             "raw_record": self._raw_view(raw) if raw is not None else None,
@@ -349,8 +391,9 @@ class LedgerBridgeService:
     async def approve_transaction(self, transaction_id: str) -> dict[str, object]:
         async with self.unit_of_work as uow:
             transaction = await uow.transactions.get(transaction_id)
+            context = await self._published_context(uow, transaction_id)
             decision = await uow.classifications.latest(transaction_id)
-            if transaction is None or decision is None:
+            if transaction is None or context is None or decision is None:
                 raise ResourceNotFoundError("Transaction not found.")
             if decision.approval_status is ApprovalStatus.APPROVED:
                 raise InvalidStateError("The classification is already approved.")
@@ -365,7 +408,8 @@ class LedgerBridgeService:
                     created_at=datetime.now(timezone.utc),
                 )
             )
-            await uow.audit.append(
+            await self._append_audit_best_effort(
+                uow,
                 AuditEvent(
                     "classification.approved",
                     {
@@ -388,8 +432,9 @@ class LedgerBridgeService:
     ) -> dict[str, object]:
         async with self.unit_of_work as uow:
             transaction = await uow.transactions.get(transaction_id)
+            context = await self._published_context(uow, transaction_id)
             current = await uow.classifications.latest(transaction_id)
-            if transaction is None or current is None:
+            if transaction is None or context is None or current is None:
                 raise ResourceNotFoundError("Transaction not found.")
             try:
                 validate_accounting_decision(
@@ -413,7 +458,8 @@ class LedgerBridgeService:
                 reviewed_at=datetime.now(timezone.utc),
             )
             saved = await uow.classifications.append(corrected)
-            await uow.audit.append(
+            await self._append_audit_best_effort(
+                uow,
                 AuditEvent(
                     "classification.corrected",
                     {
@@ -437,24 +483,7 @@ class LedgerBridgeService:
     async def pnl(self, start_date: date, end_date: date) -> dict[str, object]:
         if start_date > end_date:
             raise InvalidUploadError("start_date must not be after end_date.")
-        async with self.unit_of_work as uow:
-            transactions = await uow.transactions.list(
-                start_date=start_date, end_date=end_date
-            )
-            decisions = {
-                transaction.id: await uow.classifications.latest(transaction.id)
-                for transaction in transactions
-            }
-        report = build_pnl(
-            transactions,
-            {
-                transaction_id: decision
-                for transaction_id, decision in decisions.items()
-                if decision is not None
-            },
-            start_date,
-            end_date,
-        )
+        report = await self._build_pnl_domain(start_date, end_date)
         return self._pnl_view(report)
 
     async def pnl_account_transactions(
@@ -473,6 +502,7 @@ class LedgerBridgeService:
         self, *, realm_id: str, transaction_ids: list[str] | None
     ) -> dict[str, object]:
         async with self.unit_of_work as uow:
+            explicitly_selected = transaction_ids is not None
             if transaction_ids is None:
                 transactions = await uow.transactions.list()
             else:
@@ -485,13 +515,15 @@ class LedgerBridgeService:
                 transactions = tuple(selected)
             candidates = []
             for transaction in transactions:
+                context = await self._published_context(uow, transaction.id)
+                if context is None:
+                    if explicitly_selected:
+                        raise ResourceNotFoundError("Transaction not found.")
+                    continue
                 decision = await uow.classifications.latest(transaction.id)
                 if decision is None or decision.approval_status is not ApprovalStatus.APPROVED:
                     continue
                 if decision.transaction_type is TransactionType.TRANSFER:
-                    context = await uow.pipeline_contexts.get_for_transaction(
-                        transaction.id
-                    )
                     transfer_context = self._transfer_sync_context(
                         context, transaction.id
                     )
@@ -522,7 +554,8 @@ class LedgerBridgeService:
                 started_at=datetime.now(timezone.utc),
             )
             await uow.sync_runs.add(record)
-            await uow.audit.append(
+            await self._append_audit_best_effort(
+                uow,
                 AuditEvent(
                     "qbo.sync_planned",
                     {"run_id": run_id, "planned_items": len(items)},
@@ -585,7 +618,8 @@ class LedgerBridgeService:
                     created_at=datetime.now(timezone.utc),
                 )
             )
-            await uow.audit.append(
+            await self._append_audit_best_effort(
+                uow,
                 AuditEvent(
                     "reconciliation.completed",
                     {
@@ -595,7 +629,7 @@ class LedgerBridgeService:
                         "end_date": end_date.isoformat(),
                     },
                     datetime.now(timezone.utc),
-                )
+                ),
             )
         return view
 
@@ -608,9 +642,14 @@ class LedgerBridgeService:
 
     async def _build_pnl_domain(self, start_date: date, end_date: date):
         async with self.unit_of_work as uow:
-            transactions = await uow.transactions.list(
+            stored_transactions = await uow.transactions.list(
                 start_date=start_date, end_date=end_date
             )
+            published = []
+            for transaction in stored_transactions:
+                if await self._published_context(uow, transaction.id) is not None:
+                    published.append(transaction)
+            transactions = tuple(published)
             decisions = {
                 transaction.id: await uow.classifications.latest(transaction.id)
                 for transaction in transactions
@@ -632,6 +671,27 @@ class LedgerBridgeService:
         if upload is None:
             raise ResourceNotFoundError("Upload not found.")
         return upload
+
+    @staticmethod
+    async def _published_context(
+        uow: UnitOfWork, transaction_id: str
+    ) -> PipelineContext | None:
+        context = await uow.pipeline_contexts.get_for_transaction(transaction_id)
+        if context is None or context.status != "completed":
+            return None
+        upload = await uow.uploads.get(context.upload_id)
+        if upload is None or upload.status != "completed":
+            return None
+        return context
+
+    @staticmethod
+    async def _append_audit_best_effort(
+        uow: UnitOfWork, event: AuditEvent
+    ) -> None:
+        try:
+            await uow.audit.append(event)
+        except Exception:
+            return None
 
     @staticmethod
     def _duplicate_status(

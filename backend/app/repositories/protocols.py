@@ -30,6 +30,10 @@ class InvalidStateTransitionError(ValueError):
     """Raised when an outbox item is moved through an invalid lifecycle edge."""
 
 
+class TransactionContextConflictError(ValueError):
+    """Raised when a transaction is already owned by another upload context."""
+
+
 class OAuthStateExpiredError(ValueError):
     """Raised when a one-time OAuth state is presented after its expiry."""
 
@@ -135,7 +139,9 @@ class UploadRepository(Protocol):
 
     async def get(self, upload_id: str) -> UploadRecord | None: ...
 
-    async def update_status(self, upload: UploadRecord) -> UploadRecord: ...
+    async def transition_status(
+        self, upload: UploadRecord, *, expected_status: str
+    ) -> UploadRecord: ...
 
 
 class PipelineContextRepository(Protocol):

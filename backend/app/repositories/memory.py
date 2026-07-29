@@ -26,6 +26,7 @@ from app.repositories.protocols import (
     InvalidStateTransitionError,
     OAuthState,
     OAuthStateExpiredError,
+    TransactionContextConflictError,
 )
 
 
@@ -276,6 +277,13 @@ class _InMemoryAuditRepository:
 
 
 class _InMemoryUploadRepository:
+    _ALLOWED = {
+        "uploaded": {"processing"},
+        "failed": {"processing"},
+        "processing": {"completed", "failed"},
+        "completed": set(),
+    }
+
     def __init__(self, lock: asyncio.Lock) -> None:
         self._lock = lock
         self._records: dict[str, UploadRecord] = {}
@@ -294,7 +302,9 @@ class _InMemoryUploadRepository:
         async with self._lock:
             return self._records.get(upload_id)
 
-    async def update_status(self, upload: UploadRecord) -> UploadRecord:
+    async def transition_status(
+        self, upload: UploadRecord, *, expected_status: str
+    ) -> UploadRecord:
         async with self._lock:
             existing = self._records.get(upload.id)
             if existing is None:
@@ -317,6 +327,14 @@ class _InMemoryUploadRepository:
                 raise ImmutableRecordError(
                     f"upload {upload.id!r} source fields are immutable"
                 )
+            if (
+                existing.status != expected_status
+                or upload.status not in self._ALLOWED.get(expected_status, set())
+            ):
+                raise InvalidStateTransitionError(
+                    f"upload {upload.id!r} cannot transition "
+                    f"from {existing.status!r} to {upload.status!r}"
+                )
             self._records[upload.id] = upload
             return upload
 
@@ -328,6 +346,17 @@ class _InMemoryPipelineContextRepository:
 
     async def upsert(self, context: PipelineContext) -> PipelineContext:
         async with self._lock:
+            transaction_ids = frozenset(context.transaction_statuses)
+            for existing in self._records.values():
+                if (
+                    existing.upload_id != context.upload_id
+                    and transaction_ids
+                    & frozenset(existing.transaction_statuses)
+                ):
+                    raise TransactionContextConflictError(
+                        "transaction already belongs to upload "
+                        f"{existing.upload_id!r}"
+                    )
             self._records[context.upload_id] = context
             return context
 

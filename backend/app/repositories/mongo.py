@@ -36,6 +36,7 @@ from app.repositories.protocols import (
     InvalidStateTransitionError,
     OAuthState,
     OAuthStateExpiredError,
+    TransactionContextConflictError,
 )
 
 
@@ -470,6 +471,13 @@ class _MongoAuditRepository:
 
 
 class _MongoUploadRepository:
+    _ALLOWED = {
+        "uploaded": {"processing"},
+        "failed": {"processing"},
+        "processing": {"completed", "failed"},
+        "completed": set(),
+    }
+
     def __init__(self, collection) -> None:
         self._collection = collection
 
@@ -489,19 +497,42 @@ class _MongoUploadRepository:
         document = await self._collection.find_one({"_id": upload_id})
         return _upload_from_document(document) if document is not None else None
 
-    async def update_status(self, upload: UploadRecord) -> UploadRecord:
+    async def transition_status(
+        self, upload: UploadRecord, *, expected_status: str
+    ) -> UploadRecord:
+        if upload.status not in self._ALLOWED.get(expected_status, set()):
+            raise InvalidStateTransitionError(
+                f"upload {upload.id!r} cannot transition "
+                f"from {expected_status!r} to {upload.status!r}"
+            )
+        document = _model_document(upload)
+        document["_id"] = upload.id
+        source_filter = {
+            "_id": upload.id,
+            "status": expected_status,
+            "original_filename": upload.original_filename,
+            "media_type": upload.media_type,
+            "sha256": upload.sha256,
+            "data": upload.data,
+            "created_at": upload.created_at,
+        }
+        saved = await self._collection.find_one_and_replace(
+            source_filter,
+            document,
+            return_document=ReturnDocument.AFTER,
+        )
+        if saved is not None:
+            return _upload_from_document(saved)
         existing = await self.get(upload.id)
         if existing is None:
             raise KeyError(upload.id)
         if (
-            existing.id,
             existing.original_filename,
             existing.media_type,
             existing.sha256,
             existing.data,
             existing.created_at,
         ) != (
-            upload.id,
             upload.original_filename,
             upload.media_type,
             upload.sha256,
@@ -511,12 +542,10 @@ class _MongoUploadRepository:
             raise ImmutableRecordError(
                 f"upload {upload.id!r} source fields are immutable"
             )
-        document = _model_document(upload)
-        document["_id"] = upload.id
-        result = await self._collection.replace_one({"_id": upload.id}, document)
-        if result.matched_count != 1:
-            raise KeyError(upload.id)
-        return upload
+        raise InvalidStateTransitionError(
+            f"upload {upload.id!r} expected {expected_status!r}, "
+            f"found {existing.status!r}"
+        )
 
 
 class _MongoPipelineContextRepository:
@@ -534,9 +563,14 @@ class _MongoPipelineContextRepository:
             }
             for transaction_id in sorted(context.transaction_statuses)
         ]
-        await self._collection.replace_one(
-            {"_id": context.upload_id}, document, upsert=True
-        )
+        try:
+            await self._collection.replace_one(
+                {"_id": context.upload_id}, document, upsert=True
+            )
+        except DuplicateKeyError:
+            raise TransactionContextConflictError(
+                "transaction already belongs to another upload"
+            ) from None
         return context
 
     async def get(self, upload_id: str) -> PipelineContext | None:
@@ -833,7 +867,7 @@ class MongoUnitOfWork:
             [("upload_id", ASCENDING)], unique=True, name="upload_id_unique"
         )
         await self._database["pipeline_contexts"].create_index(
-            [("transaction_ids", ASCENDING)], name="transaction_ids"
+            [("transaction_ids", ASCENDING)], unique=True, name="transaction_ids"
         )
         await self._database["sync_runs"].create_index(
             [("id", ASCENDING)], unique=True, name="id_unique"

@@ -27,7 +27,12 @@ from app.domain.demo import (
 )
 from app.domain.transactions import Direction, NormalizedTransaction, RawRecord
 from app.repositories.memory import InMemoryUnitOfWork
-from app.repositories.protocols import AuditEvent, ImmutableRecordError, OAuthStateExpiredError
+from app.repositories.protocols import (
+    AuditEvent,
+    ImmutableRecordError,
+    InvalidStateTransitionError,
+    OAuthStateExpiredError,
+)
 
 
 def _raw(record_id: str = "raw-1", value: str = "10.00") -> RawRecord:
@@ -434,7 +439,7 @@ async def test_upload_bytes_round_trip_without_mutation():
 
 
 @pytest.mark.asyncio
-async def test_upload_status_update_preserves_immutable_source_fields():
+async def test_upload_status_transition_is_atomic_and_preserves_source_fields():
     uow = InMemoryUnitOfWork()
     upload = UploadRecord(
         id="finz-test-upload-status",
@@ -445,6 +450,7 @@ async def test_upload_status_update_preserves_immutable_source_fields():
         created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
     )
     await uow.uploads.add(upload)
+    processing = replace(upload, status="processing")
     completed = replace(
         upload,
         status="completed",
@@ -453,18 +459,76 @@ async def test_upload_status_update_preserves_immutable_source_fields():
         completed_at=datetime(2026, 4, 1, 1, tzinfo=timezone.utc),
     )
 
-    assert await uow.uploads.update_status(completed) == completed
+    assert (
+        await uow.uploads.transition_status(
+            processing, expected_status="uploaded"
+        )
+        == processing
+    )
+    assert (
+        await uow.uploads.transition_status(
+            completed, expected_status="processing"
+        )
+        == completed
+    )
     assert await uow.uploads.get(upload.id) == completed
 
-    for tampered in (
-        replace(completed, data=b"amount\n999\n"),
-        replace(completed, sha256="d" * 64),
-        replace(completed, original_filename="other.csv"),
-        replace(completed, media_type="application/csv"),
-        replace(completed, created_at=datetime(2026, 4, 2, tzinfo=timezone.utc)),
-    ):
+    with pytest.raises(InvalidStateTransitionError):
+        await uow.uploads.transition_status(
+            replace(completed, status="processing"),
+            expected_status="completed",
+        )
+
+    tampered_values = (
+        {"data": b"amount\n999\n"},
+        {"sha256": "d" * 64},
+        {"original_filename": "other.csv"},
+        {"media_type": "application/csv"},
+        {"created_at": datetime(2026, 4, 2, tzinfo=timezone.utc)},
+    )
+    for index, changes in enumerate(tampered_values):
+        candidate = replace(upload, id=f"{upload.id}-{index}")
+        await uow.uploads.add(candidate)
+        candidate_processing = replace(candidate, status="processing")
+        await uow.uploads.transition_status(
+            candidate_processing, expected_status="uploaded"
+        )
         with pytest.raises(ImmutableRecordError):
-            await uow.uploads.update_status(tampered)
+            await uow.uploads.transition_status(
+                replace(candidate_processing, status="completed", **changes),
+                expected_status="processing",
+            )
+
+
+@pytest.mark.asyncio
+async def test_only_one_concurrent_upload_processor_wins_compare_and_set():
+    uow = InMemoryUnitOfWork()
+    upload = UploadRecord(
+        id="finz-test-upload-concurrent",
+        original_filename="finz-test.csv",
+        media_type="text/csv",
+        sha256="e" * 64,
+        data=b"amount\n100\n",
+        created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+    )
+    await uow.uploads.add(upload)
+    processing = replace(upload, status="processing")
+
+    results = await asyncio.gather(
+        *(
+            uow.uploads.transition_status(
+                processing, expected_status="uploaded"
+            )
+            for _ in range(2)
+        ),
+        return_exceptions=True,
+    )
+
+    assert results.count(processing) == 1
+    assert sum(
+        isinstance(result, InvalidStateTransitionError) for result in results
+    ) == 1
+    assert await uow.uploads.get(upload.id) == processing
 
 
 @pytest.mark.asyncio
@@ -494,4 +558,21 @@ async def test_pipeline_context_is_retrievable_by_exact_transaction_id():
     assert (
         await uow.pipeline_contexts.get_for_transaction("finz-test-missing")
         is None
+    )
+
+    overlapping = replace(
+        context,
+        id="finz-test-context-overlap",
+        upload_id="finz-test-upload-overlap",
+        transaction_statuses={
+            "finz-test.transaction.$literal": {"duplicate_status": "unique"}
+        },
+    )
+    with pytest.raises(ValueError, match="already belongs to upload"):
+        await uow.pipeline_contexts.upsert(overlapping)
+    assert (
+        await uow.pipeline_contexts.get_for_transaction(
+            "finz-test.transaction.$literal"
+        )
+        == context
     )
