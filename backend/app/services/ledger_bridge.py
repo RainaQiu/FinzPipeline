@@ -153,6 +153,7 @@ class LedgerBridgeService:
             if upload.status == "completed"
             and context is not None
             and context.status == "completed"
+            and upload.published_context_token == context.claim_token
             else None
         )
         return self._upload_view(upload, published_context)
@@ -192,6 +193,12 @@ class LedgerBridgeService:
                 raise InvalidStateError(
                     "The upload is already being processed or has completed."
                 ) from error
+            existing_context = await uow.pipeline_contexts.get(upload.id)
+            replaces_context_token = (
+                existing_context.claim_token
+                if existing_context is not None
+                else None
+            )
         upload = processing_upload
         try:
             batch = ingest_rows(upload.data, upload.original_filename, mapping)
@@ -266,6 +273,7 @@ class LedgerBridgeService:
                 id=upload.id,
                 upload_id=upload.id,
                 status="completed",
+                claim_token=processing_token,
                 transaction_statuses=transaction_statuses,
                 transfer_pairs=transfer_pairs,
                 counts=counts,
@@ -277,6 +285,7 @@ class LedgerBridgeService:
                 status="completed",
                 processing_started_at=None,
                 processing_token=None,
+                published_context_token=processing_token,
                 mapping_version=1,
                 row_count=len(batch.raw_records),
                 completed_at=completed_at,
@@ -288,7 +297,10 @@ class LedgerBridgeService:
                     await uow.transactions.add(transaction)
                 for decision in decisions:
                     await uow.classifications.append(decision)
-                await uow.pipeline_contexts.upsert(context)
+                await uow.pipeline_contexts.upsert(
+                    context,
+                    replaces_token=replaces_context_token,
+                )
                 await uow.uploads.transition_status(
                     completed_upload,
                     expected_status="processing",
@@ -707,7 +719,11 @@ class LedgerBridgeService:
         if context is None or context.status != "completed":
             return None
         upload = await uow.uploads.get(context.upload_id)
-        if upload is None or upload.status != "completed":
+        if (
+            upload is None
+            or upload.status != "completed"
+            or upload.published_context_token != context.claim_token
+        ):
             return None
         return context
 

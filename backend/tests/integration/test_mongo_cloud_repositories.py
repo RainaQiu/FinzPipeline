@@ -221,6 +221,7 @@ async def test_upload_bytes_round_trip_and_orchestration_records_persist(mongo_u
         id="finz-test-context",
         upload_id=upload.id,
         status="ready",
+        claim_token="finz-test-round-trip-context-owner",
         transaction_statuses={"finz-test-transaction": "ready"},
         transfer_pairs={},
         created_at=source_time,
@@ -300,6 +301,7 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
         status="completed",
         processing_started_at=None,
         processing_token=None,
+        published_context_token=processing.processing_token,
         mapping_version=1,
         row_count=2,
         completed_at=datetime(2026, 4, 1, 1, tzinfo=timezone.utc),
@@ -308,6 +310,7 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
         id="finz-test-context-transaction",
         upload_id=upload.id,
         status="completed",
+        claim_token=processing.processing_token,
         transaction_statuses={
             "finz-test.transaction.$literal": {"duplicate_status": "canonical"},
             "finz-test-other-transaction": {"duplicate_status": "unique"},
@@ -350,6 +353,7 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
                 status="completed",
                 processing_started_at=None,
                 processing_token=None,
+                published_context_token=second_processing.processing_token,
                 data=b"amount\n999\n",
             ),
             expected_status="processing",
@@ -364,6 +368,7 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
                     2026, 4, 1, 2, tzinfo=timezone.utc
                 ),
                 processing_token="finz-test-illegal-restart-token",
+                published_context_token=None,
             ),
             expected_status="completed",
         )
@@ -457,6 +462,7 @@ async def test_scoped_reset_clears_demo_records_but_keeps_qbo_connection(mongo_u
         id="finz-test-context-reset",
         upload_id=upload.id,
         status="ready",
+        claim_token="finz-test-reset-context-owner",
         transaction_statuses={transaction.id: "ready"},
         transfer_pairs={},
         created_at=now,

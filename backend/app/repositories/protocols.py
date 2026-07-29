@@ -149,7 +149,12 @@ class UploadRepository(Protocol):
 
 
 class PipelineContextRepository(Protocol):
-    async def upsert(self, context: PipelineContext) -> PipelineContext: ...
+    async def upsert(
+        self,
+        context: PipelineContext,
+        *,
+        replaces_token: str | None = None,
+    ) -> PipelineContext: ...
 
     async def get(self, upload_id: str) -> PipelineContext | None: ...
 

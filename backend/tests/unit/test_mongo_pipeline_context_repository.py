@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
+from pymongo.errors import DuplicateKeyError
 
 from app.domain.demo import PipelineContext, UploadRecord
 from app.repositories.mongo import (
@@ -17,10 +18,32 @@ class _PipelineContextCollection:
     def __init__(self) -> None:
         self.document = None
         self.last_query = None
+        self.last_transition_query = None
 
     async def replace_one(self, query, document, *, upsert):
         self.last_query = query
         self.document = document
+
+    async def find_one_and_replace(
+        self,
+        query,
+        document,
+        *,
+        upsert,
+        return_document,
+    ):
+        self.last_transition_query = query
+        if self.document is None:
+            self.document = document
+            return document
+        allowed_tokens = query["claim_token"]["$in"]
+        if (
+            self.document["_id"] == query["_id"]
+            and self.document["claim_token"] in allowed_tokens
+        ):
+            self.document = document
+            return document
+        raise DuplicateKeyError("pipeline context owner conflict")
 
     async def find_one(self, query):
         self.last_query = query
@@ -66,6 +89,7 @@ async def test_transaction_lookup_uses_fixed_array_field_not_dynamic_path():
         id="context-1",
         upload_id="upload-1",
         status="completed",
+        claim_token="finz-test-mongo-context-owner",
         transaction_statuses={
             transaction_id: {"duplicate_status": "canonical"}
         },
@@ -86,6 +110,53 @@ async def test_transaction_lookup_uses_fixed_array_field_not_dynamic_path():
     assert collection.document["transaction_ids"] == [transaction_id]
     assert await repository.get_for_transaction(transaction_id) == context
     assert collection.last_query == {"transaction_ids": transaction_id}
+
+
+@pytest.mark.asyncio
+async def test_pipeline_context_upsert_uses_atomic_token_fence():
+    collection = _PipelineContextCollection()
+    repository = _MongoPipelineContextRepository(collection)
+    now = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    old_context = PipelineContext(
+        id="context-fenced",
+        upload_id="upload-fenced",
+        status="completed",
+        claim_token="finz-test-old-mongo-context-owner",
+        transaction_statuses={"transaction-fenced": {}},
+        transfer_pairs={},
+        created_at=now,
+        updated_at=now,
+    )
+    await repository.upsert(old_context)
+    new_context = replace(
+        old_context,
+        claim_token="finz-test-new-mongo-context-owner",
+    )
+
+    with pytest.raises(ValueError, match="another"):
+        await repository.upsert(new_context)
+    assert collection.document["claim_token"] == old_context.claim_token
+
+    assert (
+        await repository.upsert(
+            new_context,
+            replaces_token=old_context.claim_token,
+        )
+        == new_context
+    )
+    assert collection.last_transition_query == {
+        "_id": old_context.upload_id,
+        "claim_token": {
+            "$in": [
+                new_context.claim_token,
+                old_context.claim_token,
+            ]
+        },
+    }
+
+    with pytest.raises(ValueError, match="another"):
+        await repository.upsert(old_context)
+    assert collection.document["claim_token"] == new_context.claim_token
 
 
 @pytest.mark.asyncio

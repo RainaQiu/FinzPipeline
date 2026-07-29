@@ -136,6 +136,39 @@ class _BlockingClassificationRepository:
         )
 
 
+class _FirstContextWriteBarrier:
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self._calls = 0
+
+    async def upsert(self, context, *, replaces_token=None):
+        self._calls += 1
+        if self._calls == 1:
+            self.entered.set()
+            await self.release.wait()
+            context = replace(
+                context,
+                transaction_statuses={
+                    transaction_id: {"duplicate_status": "stale-worker"}
+                    for transaction_id in context.transaction_statuses
+                },
+                transfer_pairs={},
+                counts={"raw": 999},
+            )
+        return await self._delegate.upsert(
+            context,
+            replaces_token=replaces_token,
+        )
+
+    async def get(self, upload_id):
+        return await self._delegate.get(upload_id)
+
+    async def get_for_transaction(self, transaction_id):
+        return await self._delegate.get_for_transaction(transaction_id)
+
+
 async def _create_challenge_upload(service: LedgerBridgeService):
     return await service.create_upload(
         filename=DATASET_NAME,
@@ -482,6 +515,59 @@ async def test_duplicate_upload_gets_clear_transaction_ownership_conflict():
 
 
 @pytest.mark.asyncio
+async def test_completed_upload_publishes_matching_private_context_token():
+    uow = InMemoryUnitOfWork()
+    service = LedgerBridgeService(uow)
+    upload_view = await _create_challenge_upload(service)
+
+    completed_view = await service.process_upload(
+        upload_view["id"], BRIGHTFIX_MAPPING
+    )
+    upload = await uow.uploads.get(upload_view["id"])
+    context = await uow.pipeline_contexts.get(upload_view["id"])
+
+    assert upload is not None
+    assert context is not None
+    assert upload.published_context_token == context.claim_token
+    assert context.claim_token not in repr(upload)
+    assert context.claim_token not in repr(context)
+    assert "published_context_token" not in completed_view
+    assert "claim_token" not in completed_view
+    assert "published_context_token" not in await service.get_upload(upload.id)
+    assert "claim_token" not in await service.get_upload(upload.id)
+
+
+@pytest.mark.asyncio
+async def test_context_token_mismatch_is_hidden_from_every_published_view():
+    uow = InMemoryUnitOfWork()
+    service = LedgerBridgeService(uow)
+    upload_view = await _create_challenge_upload(service)
+    await service.process_upload(upload_view["id"], BRIGHTFIX_MAPPING)
+    context = await uow.pipeline_contexts.get(upload_view["id"])
+    assert context is not None
+    mismatched = replace(
+        context,
+        claim_token="finz-test-unpublished-context-owner",
+        counts={"raw": 999},
+    )
+    await uow.pipeline_contexts.upsert(
+        mismatched,
+        replaces_token=context.claim_token,
+    )
+
+    assert "counts" not in await service.get_upload(upload_view["id"])
+    assert (await service.list_transactions(limit=250))["total"] == 0
+    pnl = await service.pnl(date(2026, 4, 1), date(2026, 6, 30))
+    assert pnl["totals"]["revenue_minor"] == 0
+    assert pnl["totals"]["net_profit_minor"] == 0
+    sync = await service.plan_qbo_sync(
+        realm_id="sandbox-realm",
+        transaction_ids=None,
+    )
+    assert sync["planned_items"] == 0
+
+
+@pytest.mark.asyncio
 async def test_cancelled_processor_releases_claim_and_retry_completes():
     uow = InMemoryUnitOfWork()
     blocking = _BlockingClassificationRepository(uow.classifications)
@@ -573,3 +659,84 @@ async def test_fresh_processing_claim_remains_owned_until_timeout():
         await restarted.process_upload(upload.id, BRIGHTFIX_MAPPING)
 
     assert await uow.uploads.get(upload.id) == fresh
+
+
+@pytest.mark.asyncio
+async def test_reclaimed_worker_cannot_overwrite_published_context_views():
+    started_at = datetime(2026, 7, 30, 12, tzinfo=timezone.utc)
+    current_time = [started_at]
+    uow = InMemoryUnitOfWork()
+    barrier = _FirstContextWriteBarrier(uow.pipeline_contexts)
+    uow.pipeline_contexts = barrier
+    first_service = LedgerBridgeService(
+        uow,
+        clock=lambda: current_time[0],
+    )
+    upload_view = await _create_challenge_upload(first_service)
+    first_task = asyncio.create_task(
+        first_service.process_upload(upload_view["id"], BRIGHTFIX_MAPPING)
+    )
+    await barrier.entered.wait()
+
+    current_time[0] = started_at + EXPECTED_PROCESSING_CLAIM_TIMEOUT
+    reclaimed_service = LedgerBridgeService(
+        uow,
+        clock=lambda: current_time[0],
+    )
+    completed = await reclaimed_service.process_upload(
+        upload_view["id"], BRIGHTFIX_MAPPING
+    )
+    published_upload = await uow.uploads.get(upload_view["id"])
+    published_context = await uow.pipeline_contexts.get(upload_view["id"])
+    assert published_upload is not None
+    assert published_context is not None
+    assert (
+        published_upload.published_context_token
+        == published_context.claim_token
+    )
+    assert completed["counts"] == dict(published_context.counts)
+
+    before_upload = await reclaimed_service.get_upload(upload_view["id"])
+    before_transactions = await reclaimed_service.list_transactions(limit=250)
+    transfer_legs = [
+        item
+        for item in before_transactions["items"]
+        if item["classification"]["transaction_type"] == "transfer"
+    ]
+    for transaction in transfer_legs:
+        await reclaimed_service.approve_transaction(transaction["id"])
+    before_lineage = await reclaimed_service.get_lineage(
+        transfer_legs[0]["id"]
+    )
+    before_sync = await reclaimed_service.plan_qbo_sync(
+        realm_id="sandbox-realm",
+        transaction_ids=[item["id"] for item in transfer_legs],
+    )
+    assert before_lineage["transfer_pair_id"] is not None
+    assert before_sync["planned_items"] == 6
+
+    barrier.release.set()
+    with pytest.raises(InvalidStateError):
+        await first_task
+
+    assert await uow.uploads.get(upload_view["id"]) == published_upload
+    assert await uow.pipeline_contexts.get(upload_view["id"]) == published_context
+    assert await reclaimed_service.get_upload(upload_view["id"]) == before_upload
+    after_transactions = await reclaimed_service.list_transactions(limit=250)
+    assert [
+        (item["id"], item["duplicate_status"])
+        for item in after_transactions["items"]
+    ] == [
+        (item["id"], item["duplicate_status"])
+        for item in before_transactions["items"]
+    ]
+    assert (
+        await reclaimed_service.get_lineage(transfer_legs[0]["id"])
+        == before_lineage
+    )
+    after_sync = await reclaimed_service.plan_qbo_sync(
+        realm_id="sandbox-realm",
+        transaction_ids=[item["id"] for item in transfer_legs],
+    )
+    assert after_sync["planned_items"] == before_sync["planned_items"]
+    assert after_sync["item_ids"] == before_sync["item_ids"]

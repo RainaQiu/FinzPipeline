@@ -32,6 +32,7 @@ class UploadRecord:
     status: str = "uploaded"
     processing_started_at: datetime | None = None
     processing_token: str | None = field(default=None, repr=False)
+    published_context_token: str | None = field(default=None, repr=False)
     mapping_version: int = 0
     row_count: int = 0
     completed_at: datetime | None = None
@@ -71,6 +72,17 @@ class UploadRecord:
             raise ValueError(
                 "processing claim fields are only allowed while processing"
             )
+        if self.status == "completed":
+            if not isinstance(self.published_context_token, str):
+                raise TypeError("published_context_token must be a string")
+            if not self.published_context_token.strip():
+                raise ValueError(
+                    "published_context_token is required when completed"
+                )
+        elif self.published_context_token is not None:
+            raise ValueError(
+                "published_context_token is only allowed when completed"
+            )
         if self.completed_at is not None:
             object.__setattr__(
                 self,
@@ -87,6 +99,7 @@ class PipelineContext:
     id: str
     upload_id: str
     status: str
+    claim_token: str = field(repr=False)
     transaction_statuses: Mapping[str, object]
     transfer_pairs: Mapping[str, object]
     created_at: datetime
@@ -94,6 +107,10 @@ class PipelineContext:
     counts: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.claim_token, str):
+            raise TypeError("claim_token must be a string")
+        if not self.claim_token.strip():
+            raise ValueError("claim_token must not be empty")
         object.__setattr__(
             self, "created_at", _canonical_datetime(self.created_at, "created_at")
         )

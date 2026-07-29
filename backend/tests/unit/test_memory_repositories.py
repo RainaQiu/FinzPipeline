@@ -32,6 +32,7 @@ from app.repositories.protocols import (
     ImmutableRecordError,
     InvalidStateTransitionError,
     OAuthStateExpiredError,
+    TransactionContextConflictError,
 )
 
 
@@ -325,6 +326,7 @@ async def test_reset_clears_demo_records_but_keeps_configuration():
         id="finz-test-context-reset",
         upload_id=upload.id,
         status="ready",
+        claim_token="finz-test-context-reset-owner",
         transaction_statuses={"finz-test-transaction": "ready"},
         transfer_pairs={},
         created_at=now,
@@ -463,6 +465,7 @@ async def test_upload_status_transition_is_atomic_and_preserves_source_fields():
         status="completed",
         processing_started_at=None,
         processing_token=None,
+        published_context_token=processing_token,
         mapping_version=1,
         row_count=1,
         completed_at=datetime(2026, 4, 1, 1, tzinfo=timezone.utc),
@@ -491,6 +494,7 @@ async def test_upload_status_transition_is_atomic_and_preserves_source_fields():
                 status="processing",
                 processing_started_at=processing_started_at,
                 processing_token="finz-test-new-owner",
+                published_context_token=None,
             ),
             expected_status="completed",
         )
@@ -521,6 +525,9 @@ async def test_upload_status_transition_is_atomic_and_preserves_source_fields():
                     status="completed",
                     processing_started_at=None,
                     processing_token=None,
+                    published_context_token=(
+                        candidate_processing.processing_token
+                    ),
                     **changes,
                 ),
                 expected_status="processing",
@@ -610,6 +617,7 @@ async def test_reclaimed_upload_claim_fences_the_old_worker():
         status="completed",
         processing_started_at=None,
         processing_token=None,
+        published_context_token=old_claim.processing_token,
     )
     with pytest.raises(InvalidStateTransitionError):
         await uow.uploads.transition_status(
@@ -622,6 +630,7 @@ async def test_reclaimed_upload_claim_fences_the_old_worker():
         status="completed",
         processing_started_at=None,
         processing_token=None,
+        published_context_token=new_claim.processing_token,
     )
     assert (
         await uow.uploads.transition_status(
@@ -641,6 +650,7 @@ async def test_pipeline_context_is_retrievable_by_exact_transaction_id():
         id="finz-test-context-transaction",
         upload_id="finz-test-upload-transaction",
         status="completed",
+        claim_token="finz-test-context-lookup-owner",
         transaction_statuses={
             "finz-test.transaction.$literal": {"duplicate_status": "canonical"},
             "finz-test-other-transaction": {"duplicate_status": "unique"},
@@ -666,6 +676,7 @@ async def test_pipeline_context_is_retrievable_by_exact_transaction_id():
         context,
         id="finz-test-context-overlap",
         upload_id="finz-test-upload-overlap",
+        claim_token="finz-test-context-overlap-owner",
         transaction_statuses={
             "finz-test.transaction.$literal": {"duplicate_status": "unique"}
         },
@@ -678,3 +689,48 @@ async def test_pipeline_context_is_retrievable_by_exact_transaction_id():
         )
         == context
     )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_context_replacement_is_fenced_by_claim_token():
+    uow = InMemoryUnitOfWork()
+    now = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    old_context = PipelineContext(
+        id="finz-test-context-fenced",
+        upload_id="finz-test-upload-fenced",
+        status="completed",
+        claim_token="finz-test-old-context-owner",
+        transaction_statuses={
+            "finz-test-context-transaction": {
+                "duplicate_status": "canonical"
+            }
+        },
+        transfer_pairs={},
+        counts={"raw": 2},
+        created_at=now,
+        updated_at=now,
+    )
+    await uow.pipeline_contexts.upsert(old_context)
+
+    same_owner = replace(old_context, counts={"raw": 3})
+    assert await uow.pipeline_contexts.upsert(same_owner) == same_owner
+
+    new_context = replace(
+        old_context,
+        claim_token="finz-test-new-context-owner",
+        counts={"raw": 4},
+    )
+    with pytest.raises(TransactionContextConflictError):
+        await uow.pipeline_contexts.upsert(new_context)
+    assert await uow.pipeline_contexts.get(old_context.upload_id) == same_owner
+
+    assert (
+        await uow.pipeline_contexts.upsert(
+            new_context,
+            replaces_token=old_context.claim_token,
+        )
+        == new_context
+    )
+    with pytest.raises(TransactionContextConflictError):
+        await uow.pipeline_contexts.upsert(old_context)
+    assert await uow.pipeline_contexts.get(old_context.upload_id) == new_context

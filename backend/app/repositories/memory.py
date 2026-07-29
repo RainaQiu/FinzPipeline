@@ -354,8 +354,22 @@ class _InMemoryPipelineContextRepository:
         self._lock = lock
         self._records: dict[str, PipelineContext] = {}
 
-    async def upsert(self, context: PipelineContext) -> PipelineContext:
+    async def upsert(
+        self,
+        context: PipelineContext,
+        *,
+        replaces_token: str | None = None,
+    ) -> PipelineContext:
         async with self._lock:
+            owned = self._records.get(context.upload_id)
+            if (
+                owned is not None
+                and owned.claim_token != context.claim_token
+                and owned.claim_token != replaces_token
+            ):
+                raise TransactionContextConflictError(
+                    "pipeline context is owned by another processing claim"
+                )
             transaction_ids = frozenset(context.transaction_statuses)
             for existing in self._records.values():
                 if (

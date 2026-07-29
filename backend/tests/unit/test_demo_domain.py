@@ -136,6 +136,67 @@ def test_upload_processing_claim_fields_are_paired_private_and_canonical():
             )
 
 
+def test_context_and_completed_upload_tokens_are_required_and_private():
+    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    context = PipelineContext(
+        id="context-fenced",
+        upload_id="upload-fenced",
+        status="completed",
+        claim_token="private-context-owner",
+        transaction_statuses={},
+        transfer_pairs={},
+        created_at=now,
+        updated_at=now,
+    )
+    completed = UploadRecord(
+        id="upload-fenced",
+        original_filename="source.csv",
+        media_type="text/csv",
+        sha256="a" * 64,
+        data=b"source",
+        created_at=now,
+        status="completed",
+        published_context_token="private-context-owner",
+    )
+
+    assert context.claim_token == "private-context-owner"
+    assert completed.published_context_token == "private-context-owner"
+    assert "private-context-owner" not in repr(context)
+    assert "private-context-owner" not in repr(completed)
+
+    with pytest.raises((TypeError, ValueError)):
+        PipelineContext(
+            id="context-unowned",
+            upload_id="upload-unowned",
+            status="completed",
+            claim_token="",
+            transaction_statuses={},
+            transfer_pairs={},
+            created_at=now,
+            updated_at=now,
+        )
+    with pytest.raises((TypeError, ValueError)):
+        UploadRecord(
+            id="upload-unpublished",
+            original_filename="source.csv",
+            media_type="text/csv",
+            sha256="b" * 64,
+            data=b"source",
+            created_at=now,
+            status="completed",
+        )
+    with pytest.raises(ValueError):
+        UploadRecord(
+            id="upload-active",
+            original_filename="source.csv",
+            media_type="text/csv",
+            sha256="c" * 64,
+            data=b"source",
+            created_at=now,
+            published_context_token="not-completed",
+        )
+
+
 def test_pipeline_context_freezes_non_negative_integer_counts():
     """Persisted workflow counts must not follow caller mutation."""
     counts = {"raw": 2, "unique": 1}
@@ -143,6 +204,7 @@ def test_pipeline_context_freezes_non_negative_integer_counts():
         id="context-1",
         upload_id="upload-1",
         status="completed",
+        claim_token="context-count-owner",
         transaction_statuses={},
         transfer_pairs={},
         created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
@@ -158,6 +220,7 @@ def test_pipeline_context_freezes_non_negative_integer_counts():
             id="context-bool",
             upload_id="upload-1",
             status="completed",
+            claim_token="context-bool-owner",
             transaction_statuses={},
             transfer_pairs={},
             created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
@@ -169,6 +232,7 @@ def test_pipeline_context_freezes_non_negative_integer_counts():
             id="context-float",
             upload_id="upload-1",
             status="completed",
+            claim_token="context-float-owner",
             transaction_statuses={},
             transfer_pairs={},
             created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
@@ -180,6 +244,7 @@ def test_pipeline_context_freezes_non_negative_integer_counts():
             id="context-key",
             upload_id="upload-1",
             status="completed",
+            claim_token="context-key-owner",
             transaction_statuses={},
             transfer_pairs={},
             created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
@@ -191,6 +256,7 @@ def test_pipeline_context_freezes_non_negative_integer_counts():
             id="context-negative",
             upload_id="upload-1",
             status="completed",
+            claim_token="context-negative-owner",
             transaction_statuses={},
             transfer_pairs={},
             created_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
@@ -238,6 +304,7 @@ def test_demo_records_canonicalize_all_datetimes_to_utc_milliseconds():
                 id="finz-test-context-time",
                 upload_id="finz-test-upload-time",
                 status="ready",
+                claim_token="finz-test-context-time-owner",
                 transaction_statuses={},
                 transfer_pairs={},
                 created_at=source,

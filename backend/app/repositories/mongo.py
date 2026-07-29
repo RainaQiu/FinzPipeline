@@ -564,7 +564,12 @@ class _MongoPipelineContextRepository:
     def __init__(self, collection) -> None:
         self._collection = collection
 
-    async def upsert(self, context: PipelineContext) -> PipelineContext:
+    async def upsert(
+        self,
+        context: PipelineContext,
+        *,
+        replaces_token: str | None = None,
+    ) -> PipelineContext:
         document = _model_document(context)
         document["_id"] = context.upload_id
         document["transaction_ids"] = sorted(context.transaction_statuses)
@@ -575,14 +580,30 @@ class _MongoPipelineContextRepository:
             }
             for transaction_id in sorted(context.transaction_statuses)
         ]
+        allowed_tokens = [context.claim_token]
+        if (
+            replaces_token is not None
+            and replaces_token != context.claim_token
+        ):
+            allowed_tokens.append(replaces_token)
         try:
-            await self._collection.replace_one(
-                {"_id": context.upload_id}, document, upsert=True
+            saved = await self._collection.find_one_and_replace(
+                {
+                    "_id": context.upload_id,
+                    "claim_token": {"$in": allowed_tokens},
+                },
+                document,
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
             )
         except DuplicateKeyError:
             raise TransactionContextConflictError(
-                "transaction already belongs to another upload"
+                "pipeline context belongs to another claim or upload"
             ) from None
+        if saved is None:
+            raise TransactionContextConflictError(
+                "pipeline context belongs to another claim or upload"
+            )
         return context
 
     async def get(self, upload_id: str) -> PipelineContext | None:
