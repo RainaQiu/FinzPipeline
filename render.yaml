@@ -8,39 +8,21 @@ services:
     healthCheckPath: /health
     envVars:
       - key: APP_ENVIRONMENT
-        value: production
+        value: demo
       - key: FRONTEND_STATIC_DIR
         value: frontend/dist
       - key: FINZ_REPOSITORY_BACKEND
-        value: mongo
+        value: memory
       - key: APP_BASE_URL
-        sync: false
-      - key: MONGODB_URI
-        sync: false
+        value: https://finz-public-demo.onrender.com
       - key: MONGODB_DATABASE
         value: finz_ledger_bridge
-      - key: QBO_CLIENT_ID
-        sync: false
-      - key: QBO_CLIENT_SECRET
-        sync: false
-      - key: QBO_REDIRECT_URI
-        sync: false
-      - key: QBO_TOKEN_ENCRYPTION_KEY
-        sync: false
-      - key: QBO_EXPECTED_REALM_ID
-        sync: false
       - key: QBO_EXPECTED_COMPANY_NAME
         value: BrightFix Home Services LLC
       - key: QBO_SANDBOX_WRITES_ENABLED
         value: "false"
-      - key: FINZ_DEMO_RESET_SECRET
-        sync: false
-      - key: FINZ_DEMO_ACCESS_CODE
-        sync: false
       - key: GEMINI_ENABLED
-        value: true
-      - key: GEMINI_API_KEY
-        sync: false
+        value: false
       - key: GEMINI_MODEL
         value: gemini-3.5-flash-lite
       - key: GEMINI_MAX_CANDIDATES_PER_UPLOAD
