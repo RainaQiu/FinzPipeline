@@ -14,6 +14,7 @@ intentionally disabled.
 - **Submission PDF:**
   [deliverables/Finz_Ledger_Bridge_Submission.pdf](deliverables/Finz_Ledger_Bridge_Submission.pdf)
 - **AI usage note:** [docs/ai-usage.md](docs/ai-usage.md)
+- **Video:** https://drive.google.com/file/d/1TybjcDxHKtXHPxeipfdgBqSKl1iQqqBO/view?usp=drive_link
 
 ## Safe local start
 
