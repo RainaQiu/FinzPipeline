@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import MappingProxyType
-from typing import Awaitable, Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol
 
 from app.domain.accounting import OutboxItem, OutboxStatus
 from app.domain.classification import ClassificationDecision
@@ -32,6 +32,10 @@ class InvalidStateTransitionError(ValueError):
 
 class TransactionContextConflictError(ValueError):
     """Raised when a transaction is already owned by another upload context."""
+
+
+class DemoResetLeaseLostError(RuntimeError):
+    """Raised before a reset write when its execution lease is no longer owned."""
 
 
 class OAuthStateExpiredError(ValueError):
@@ -203,7 +207,11 @@ class DemoResetRepository(Protocol):
     async def get(self, run_id: str) -> ResetRun | None: ...
 
     async def clear_shared_workspace(
-        self, *, ensure_owner: Callable[[], Awaitable[None]]
+        self,
+        *,
+        lease_id: str,
+        clock: Callable[[], datetime],
+        lease_duration: timedelta,
     ) -> None: ...
 
 

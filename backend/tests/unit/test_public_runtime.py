@@ -153,6 +153,41 @@ def test_production_startup_fails_when_mongo_index_initialization_fails(
     assert unavailable.closed is True
 
 
+def test_production_startup_requires_transaction_capable_mongo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StandaloneMongo:
+        closed = False
+
+        async def create_indexes(self) -> None:
+            return None
+
+        async def supports_transactions(self) -> bool:
+            return False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    standalone = StandaloneMongo()
+    monkeypatch.setattr(
+        "app.main.MongoUnitOfWork.from_uri",
+        lambda *_args, **_kwargs: standalone,
+    )
+    app = create_app(
+        settings=_settings(
+            app_environment="production",
+            frontend_static_dir=STATIC_BUILD,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="transaction-capable") as error:
+        with TestClient(app):
+            pass
+
+    assert error.value.__cause__ is None
+    assert standalone.closed is True
+
+
 def test_development_serves_static_assets_and_spa_deep_links() -> None:
     """Removing static hosting or SPA fallback would break direct browser navigation."""
     app = create_app(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import fields, replace
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -10,6 +12,8 @@ from typing import Any, Mapping
 
 from bson.codec_options import CodecOptions
 from pymongo import ASCENDING, ReturnDocument
+from pymongo.read_concern import ReadConcern
+from pymongo.write_concern import WriteConcern
 from pymongo.errors import DuplicateKeyError
 
 from app.domain.accounting import OutboxItem, OutboxStatus
@@ -32,6 +36,7 @@ from app.domain.demo import (
 from app.domain.transactions import Direction, NormalizedTransaction, RawRecord
 from app.repositories.protocols import (
     AuditEvent,
+    DemoResetLeaseLostError,
     ImmutableRecordError,
     InvalidStateTransitionError,
     OAuthState,
@@ -810,10 +815,44 @@ class _MongoDemoResetRepository:
             else None
         )
 
-    async def clear_shared_workspace(self, *, ensure_owner) -> None:
+    async def clear_shared_workspace(
+        self, *, lease_id: str, clock, lease_duration
+    ) -> None:
         for collection_name in self._WORKSPACE_COLLECTIONS:
-            await ensure_owner()
-            await self._database[collection_name].delete_many({})
+            async with self._database.client.start_session() as session:
+                async def renew_and_clear(transaction_session):
+                    now = clock()
+                    document = await self._database[
+                        "execution_leases"
+                    ].find_one_and_update(
+                        {
+                            "_id": "active",
+                            "id": lease_id,
+                            "expires_at": {"$gt": now},
+                        },
+                        {"$set": {"expires_at": now + lease_duration}},
+                        return_document=ReturnDocument.AFTER,
+                        session=transaction_session,
+                    )
+                    if document is None or document.get("id") != lease_id:
+                        raise DemoResetLeaseLostError(
+                            "reset execution lease lost"
+                        )
+                    await self._database[collection_name].delete_many(
+                        {},
+                        session=transaction_session,
+                        comment="finz-shared-demo-reset",
+                    )
+
+                await asyncio.wait_for(
+                    session.with_transaction(
+                        renew_and_clear,
+                        read_concern=ReadConcern("snapshot"),
+                        write_concern=WriteConcern("majority"),
+                        max_commit_time_ms=5_000,
+                    ),
+                    timeout=10,
+                )
 
 
 class MongoUnitOfWork:
@@ -972,6 +1011,14 @@ class MongoUnitOfWork:
     async def ping(self) -> bool:
         result = await self._database.command({"ping": 1})
         return result.get("ok") == 1
+
+    async def supports_transactions(self) -> bool:
+        hello = await self._client.admin.command({"hello": 1})
+        has_sessions = hello.get("logicalSessionTimeoutMinutes") is not None
+        transactional_topology = bool(hello.get("setName")) or (
+            hello.get("msg") == "isdbgrid"
+        )
+        return has_sessions and transactional_topology
 
     async def aclose(self) -> None:
         if self._owns_client:

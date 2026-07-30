@@ -22,6 +22,7 @@ from app.domain.demo import (
 from app.domain.transactions import NormalizedTransaction, RawRecord
 from app.repositories.protocols import (
     AuditEvent,
+    DemoResetLeaseLostError,
     ImmutableRecordError,
     InvalidStateTransitionError,
     OAuthState,
@@ -561,11 +562,27 @@ class _InMemoryDemoResetRepository:
         async with self._lock:
             return self._records.get(run_id)
 
-    async def clear_shared_workspace(self, *, ensure_owner) -> None:
+    async def clear_shared_workspace(
+        self, *, lease_id: str, clock, lease_duration
+    ) -> None:
         async def clear(lock: asyncio.Lock, action) -> None:
-            await ensure_owner()
-            async with lock:
-                action()
+            async with self._execution_leases._lock:
+                now = clock()
+                active = self._execution_leases._active
+                if (
+                    active is None
+                    or active.id != lease_id
+                    or active.expires_at <= now
+                ):
+                    raise DemoResetLeaseLostError("reset execution lease lost")
+                self._execution_leases._active = replace(
+                    active, expires_at=now + lease_duration
+                )
+                if lock is self._execution_leases._lock:
+                    action()
+                else:
+                    async with lock:
+                        action()
 
         await clear(self._lock, self._uploads._records.clear)
         await clear(self._lock, self._pipeline_contexts._records.clear)

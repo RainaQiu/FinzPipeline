@@ -75,8 +75,9 @@ def test_reset_endpoint_redacts_repository_failure() -> None:
     uow = InMemoryUnitOfWork()
 
     class FailingResetRepository:
-        async def clear_shared_workspace(self, *, ensure_owner) -> None:
-            await ensure_owner()
+        async def clear_shared_workspace(
+            self, *, lease_id, clock, lease_duration
+        ) -> None:
             raise RuntimeError("mongodb://user:secret@example/reset failed")
 
         async def add(self, run):

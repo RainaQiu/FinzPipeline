@@ -207,6 +207,8 @@ async def test_expired_mongo_lease_owner_cannot_renew_after_takeover(mongo_uow):
 
 
 async def test_mongo_reset_stops_after_expired_owner_is_replaced(mongo_uow):
+    if not await mongo_uow.supports_transactions():
+        pytest.skip("reset fencing transactions require a replica set or mongos")
     now = _future_non_millisecond_time()
     first = ExecutionLease(
         id="finz-test-mongo-reset-owner-a",
@@ -227,36 +229,22 @@ async def test_mongo_reset_stops_after_expired_owner_is_replaced(mongo_uow):
     await mongo_uow.raw_records.add(raw)
     await mongo_uow.uploads.add(upload)
     assert await mongo_uow.execution_leases.acquire(first, now=now)
-    checks = 0
-
-    async def ensure_owner() -> None:
-        nonlocal checks
-        checks += 1
-        current = now
-        if checks == 2:
-            current = now + timedelta(minutes=2)
-            takeover = ExecutionLease(
-                id="finz-test-mongo-reset-owner-b",
-                acquired_at=current,
-                expires_at=current + timedelta(minutes=5),
-            )
-            assert await mongo_uow.execution_leases.acquire(
-                takeover, now=current
-            )
-        renewed = await mongo_uow.execution_leases.renew(
-            first.id,
-            now=current,
-            expires_at=current + timedelta(minutes=1),
-        )
-        if not renewed:
-            raise RuntimeError("lease lost")
+    await mongo_uow.execution_leases.release(first.id)
+    takeover = ExecutionLease(
+        id="finz-test-mongo-reset-owner-b",
+        acquired_at=now,
+        expires_at=now + timedelta(minutes=5),
+    )
+    assert await mongo_uow.execution_leases.acquire(takeover, now=now)
 
     with pytest.raises(RuntimeError, match="lease lost"):
         await mongo_uow.demo_reset.clear_shared_workspace(
-            ensure_owner=ensure_owner
+            lease_id=first.id,
+            clock=lambda: now,
+            lease_duration=timedelta(minutes=1),
         )
 
-    assert await mongo_uow.raw_records.get(raw.id) is None
+    assert await mongo_uow.raw_records.get(raw.id) == raw
     assert await mongo_uow.uploads.get(upload.id) == upload
 
 
@@ -492,6 +480,8 @@ async def test_upload_status_update_and_transaction_context_lookup_are_safe(mong
 
 
 async def test_scoped_reset_clears_demo_records_but_keeps_qbo_connection(mongo_uow):
+    if not await mongo_uow.supports_transactions():
+        pytest.skip("reset fencing transactions require a replica set or mongos")
     now = _future_non_millisecond_time()
     upload = _upload("finz-test-upload-reset")
     connection = _connection()
@@ -599,14 +589,10 @@ async def test_scoped_reset_clears_demo_records_but_keeps_qbo_connection(mongo_u
     assert await mongo_uow.demo_reset.add(reset) == reset
     assert await mongo_uow.demo_reset.add(reset) == reset
 
-    owner_checks = 0
-
-    async def ensure_owner() -> None:
-        nonlocal owner_checks
-        owner_checks += 1
-
     await mongo_uow.demo_reset.clear_shared_workspace(
-        ensure_owner=ensure_owner
+        lease_id=lease.id,
+        clock=lambda: now,
+        lease_duration=timedelta(minutes=5),
     )
 
     assert await mongo_uow.uploads.get(upload.id) is None
@@ -643,4 +629,3 @@ async def test_scoped_reset_clears_demo_records_but_keeps_qbo_connection(mongo_u
     )
     assert first_event.sequence == 1
     assert await mongo_uow.qbo_connection.get() == connection
-    assert owner_checks >= 10

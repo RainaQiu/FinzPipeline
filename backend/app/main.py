@@ -24,6 +24,10 @@ from app.repositories.mongo import MongoUnitOfWork
 from app.services.ledger_bridge import LedgerBridgeService
 
 
+class _TransactionCapabilityError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class _QboRuntimeSettings:
     """Plaintext values held only in the running OAuth client boundary."""
@@ -83,10 +87,21 @@ def create_app(
         if owns_unit_of_work:
             try:
                 await selected_uow.create_indexes()
-            except Exception:
+                if (
+                    settings.app_environment == "production"
+                    and not await selected_uow.supports_transactions()
+                ):
+                    raise _TransactionCapabilityError(
+                        "Production reset requires transaction-capable MongoDB"
+                    )
+            except Exception as exc:
                 application.state.repository_ready = False
                 if settings.app_environment == "production":
                     await selected_uow.aclose()
+                    if isinstance(exc, _TransactionCapabilityError):
+                        raise RuntimeError(
+                            "Production requires transaction-capable MongoDB"
+                        ) from None
                     raise RuntimeError(
                         "Required repository initialization failed"
                     ) from None

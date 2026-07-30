@@ -99,8 +99,9 @@ async def test_reset_service_releases_lease_when_repository_clear_fails() -> Non
     stored_reset = uow.demo_reset
 
     class FailingResetRepository:
-        async def clear_shared_workspace(self, *, ensure_owner) -> None:
-            await ensure_owner()
+        async def clear_shared_workspace(
+            self, *, lease_id, clock, lease_duration
+        ) -> None:
             raise RuntimeError("mongodb://user:secret@example/reset failed")
 
         async def add(self, run):
@@ -151,8 +152,9 @@ async def test_reset_service_stops_when_lease_owner_is_lost() -> None:
     stored_reset = uow.demo_reset
 
     class LostOwnerResetRepository:
-        async def clear_shared_workspace(self, *, ensure_owner) -> None:
-            await ensure_owner()
+        async def clear_shared_workspace(
+            self, *, lease_id, clock, lease_duration
+        ) -> None:
             await uow.execution_leases.release(
                 "demo-reset:finz-test-lost-owner"
             )
@@ -162,7 +164,13 @@ async def test_reset_service_stops_when_lease_owner_is_lost() -> None:
                 expires_at=NOW + timedelta(minutes=5),
             )
             assert await uow.execution_leases.acquire(takeover, now=NOW)
-            await ensure_owner()
+            renewed = await uow.execution_leases.renew(
+                lease_id,
+                now=clock(),
+                expires_at=clock() + lease_duration,
+            )
+            if not renewed:
+                raise DemoResetLeaseLostError("lease lost")
             raise AssertionError("old reset owner continued after takeover")
 
         async def add(self, run):

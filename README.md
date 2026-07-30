@@ -69,6 +69,12 @@ collections. It deliberately preserves the encrypted singleton
 `qbo_connections` configuration and uses the existing execution lease to
 prevent overlap with another protected operation.
 
+The public deployment requires a transaction-capable MongoDB topology (Atlas,
+a replica set, or mongos) because each lease renewal and collection clear is
+committed atomically. The local standalone Docker MongoDB remains valid for
+ordinary repository development, but the reset endpoint reports unavailable
+there and Atlas-only reset transaction tests are explicitly skipped.
+
 ## Tests
 
 GitHub Actions runs this same Python 3.12 and pnpm baseline for pull requests

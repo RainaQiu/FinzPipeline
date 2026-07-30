@@ -8,15 +8,11 @@ from typing import Callable
 from uuid import uuid4
 
 from app.domain.demo import ExecutionLease, ResetRun
-from app.repositories.protocols import UnitOfWork
+from app.repositories.protocols import DemoResetLeaseLostError, UnitOfWork
 
 
 class DemoResetInProgressError(RuntimeError):
     """Raised when another shared-workspace operation owns the execution lease."""
-
-
-class DemoResetLeaseLostError(RuntimeError):
-    """Raised when a reset loses its execution lease before clearing completes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,18 +50,11 @@ class DemoResetService:
         if not await self._unit_of_work.execution_leases.acquire(lease, now=now):
             raise DemoResetInProgressError("Shared workspace reset already in progress")
 
-        async def ensure_owner() -> None:
-            renewal_time = self._clock()
-            if not await self._unit_of_work.execution_leases.renew(
-                lease_id,
-                now=renewal_time,
-                expires_at=renewal_time + self._lease_duration,
-            ):
-                raise DemoResetLeaseLostError("Shared workspace reset lease was lost")
-
         try:
             await self._unit_of_work.demo_reset.clear_shared_workspace(
-                ensure_owner=ensure_owner
+                lease_id=lease_id,
+                clock=self._clock,
+                lease_duration=self._lease_duration,
             )
             completed_at = self._clock()
             await self._unit_of_work.demo_reset.add(
