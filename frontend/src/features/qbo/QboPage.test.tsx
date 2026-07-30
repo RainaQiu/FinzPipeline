@@ -23,9 +23,9 @@ describe("QboPage", () => {
     renderWithClient(<QboPage />);
 
     expect(await screen.findByText("Demo/local mode")).toBeInTheDocument();
-    expect(screen.getAllByText(/pending outbox/i).length).toBeGreaterThan(0);
-    const networkNote = screen
-      .getByText(/No QBO transaction write network access has occurred/i)
+    expect((await screen.findAllByText(/pending outbox/i)).length).toBeGreaterThan(0);
+    const networkNote = (await screen
+      .findByText(/No QBO transaction write network access has occurred/i))
       .closest(".network-note");
     expect(networkNote).toHaveTextContent(
       "No QBO transaction write network access has occurred. OAuth and read-only verification",

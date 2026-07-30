@@ -211,6 +211,7 @@ async def _assert_partial_pipeline_is_not_published(
 def _matching_qbo_report(pnl):
     return {
         "Header": {
+            "ReportName": "ProfitAndLoss",
             "ReportBasis": "Cash",
             "StartPeriod": "2026-04-01",
             "EndPeriod": "2026-06-30",
@@ -299,6 +300,7 @@ async def test_processed_workflow_views_survive_service_reconstruction():
         end_date=date(2026, 6, 30),
         qbo_report={
             "Header": {
+                "ReportName": "ProfitAndLoss",
                 "ReportBasis": "Cash",
                 "StartPeriod": "2026-04-01",
                 "EndPeriod": "2026-06-30",

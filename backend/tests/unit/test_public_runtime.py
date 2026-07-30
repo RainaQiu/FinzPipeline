@@ -138,14 +138,17 @@ def test_production_rejects_non_sandbox_or_untrusted_qbo_endpoints(
     assert error.value.missing_names == (missing_name,)
 
 
-def test_render_blueprint_uses_free_plan_and_mongo_repository() -> None:
-    """The checked-in MVP blueprint must be free-tier and production-safe by default."""
+def test_render_blueprint_uses_zero_secret_demo_profile() -> None:
+    """The deadline blueprint must boot safely without pretending integrations exist."""
     blueprint = (PROJECT_ROOT / "render.yaml").read_text(encoding="utf-8")
 
     assert "plan: free" in blueprint
-    assert "key: FINZ_REPOSITORY_BACKEND\n        value: mongo" in blueprint
-    assert "key: GEMINI_ENABLED\n        value: true" in blueprint
-    assert "key: GEMINI_API_KEY\n        sync: false" in blueprint
+    assert "key: APP_ENVIRONMENT\n        value: demo" in blueprint
+    assert "key: FRONTEND_STATIC_DIR\n        value: frontend/dist" in blueprint
+    assert "key: FINZ_REPOSITORY_BACKEND\n        value: memory" in blueprint
+    assert "key: QBO_SANDBOX_WRITES_ENABLED\n        value: \"false\"" in blueprint
+    assert "key: GEMINI_ENABLED\n        value: false" in blueprint
+    assert "GEMINI_API_KEY" not in blueprint
     assert "key: GEMINI_MODEL\n        value: gemini-3.5-flash-lite" in blueprint
     assert "key: GEMINI_MAX_CANDIDATES_PER_UPLOAD\n        value: 10" in blueprint
 

@@ -180,6 +180,7 @@ def test_ready_upload_and_process_challenge_workbook() -> None:
             "end_date": "2026-06-30",
             "qbo_report": {
                 "Header": {
+                    "ReportName": "ProfitAndLoss",
                     "ReportBasis": "Cash",
                     "StartPeriod": "2026-04-01",
                     "EndPeriod": "2026-06-30",
