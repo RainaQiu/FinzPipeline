@@ -6,6 +6,15 @@ rules, routes uncertain items to review, calculates cash-basis P&L, and prepares
 idempotent QuickBooks Online (QBO) outbox items. QBO transaction execution is
 intentionally disabled.
 
+## Submission links
+
+- **Public demo:** https://finz-public-demo.onrender.com
+- **Source repository:** https://github.com/RainaQiu/FinzPipeline
+- **Delivery index:** [SUBMISSION.md](SUBMISSION.md)
+- **Submission PDF:**
+  [deliverables/Finz_Ledger_Bridge_Submission.pdf](deliverables/Finz_Ledger_Bridge_Submission.pdf)
+- **AI usage note:** [docs/ai-usage.md](docs/ai-usage.md)
+
 ## Safe local start
 
 Use Python 3.12 from the project root:
@@ -35,8 +44,15 @@ React app, then FastAPI serves its built files and the existing relative
 `/review` return the SPA; API, health, readiness, and documentation routes
 remain backend routes.
 
-Create the service from `render.yaml`, then set these values manually in the
-Render dashboard (they are deliberately not stored in the blueprint):
+The deadline deployment in the checked-in `render.yaml` is intentionally a
+zero-secret demonstration profile. It uses an ephemeral in-memory repository,
+deterministic classification, and QBO Demo/local mode. It demonstrates the
+upload, normalization, duplicate/transfer detection, review, and internal P&L
+workflow without exposing credentials. QBO writes remain disabled.
+
+To enable the full cloud integration after the deadline demonstration, change
+the runtime to the production Mongo profile and set these values manually in
+the Render dashboard (they must never be stored in the blueprint):
 
 - `APP_BASE_URL` to the service's HTTPS URL.
 - `MONGODB_URI` and `MONGODB_DATABASE` for a non-placeholder Mongo database.
@@ -59,16 +75,15 @@ Render dashboard (they are deliberately not stored in the blueprint):
   and deterministic classification continues normally.
 
 The blueprint explicitly selects Render's free plan, so the service may sleep
-when idle and its first request after sleeping may be slow. It also selects the
-Mongo repository backend; production will remain unavailable until a valid
-Atlas URI is configured.
+when idle and its first request after sleeping may be slow. Data in the current
+in-memory deployment is lost whenever the service restarts or sleeps.
 
-Production refuses to start with the in-memory repository, placeholder Mongo
-settings, non-sandbox QBO, missing QBO settings, a non-HTTPS public URL, or a
-missing frontend build. `/health` is liveness; `/ready` reports dependency
-readiness and does not expose connection details. This is a shared
-demonstration environment: do not upload sensitive or real financial data.
-Authentication, tenant isolation, and per-user data separation are
+The production profile refuses to start with the in-memory repository,
+placeholder Mongo settings, non-sandbox QBO, missing QBO settings, a non-HTTPS
+public URL, or a missing frontend build. `/health` is liveness; `/ready`
+reports dependency readiness without exposing connection details. This is a
+shared demonstration environment: do not upload sensitive or real financial
+data. Authentication, tenant isolation, and per-user data separation are
 intentionally outside this challenge demo scope.
 
 ### Minimum cloud setup
@@ -76,9 +91,10 @@ intentionally outside this challenge demo scope.
 1. In MongoDB Atlas, create/select a free transaction-capable cluster, a
    dedicated least-privilege app user, and network access for Render. Put its
    application URI only in Render `MONGODB_URI`.
-2. In Render, connect `RainaQiu/FinzPipeline`, create the Blueprint service,
-   and fill every `sync: false` variable shown in `render.yaml`. The free
-   service can sleep, so the first request may be slow.
+2. In Render, switch `APP_ENVIRONMENT` to `production`,
+   `FINZ_REPOSITORY_BACKEND` to `mongo`, add the secret variables listed
+   above, and redeploy. The free service can sleep, so the first request may
+   be slow.
 3. In Intuit Development settings, add exactly
    `<APP_BASE_URL>/api/v1/integrations/qbo/callback`; keep the app in
    Development/Sandbox and connect only BrightFix Home Services LLC.
@@ -142,6 +158,118 @@ The endpoint does not connect to or write QBO. The later guarded Sandbox sync
 step will require both a one-time grant and a separate explicit confirmation;
 the first real QBO Sandbox transaction remains subject to explicit user
 authorization.
+
+## Technical architecture
+
+The application uses a ports-and-adapters architecture around a deterministic
+accounting core:
+
+1. React provides upload, mapping, review, P&L, QBO, and reconciliation views.
+2. FastAPI exposes the workflow and integration endpoints.
+3. Domain services normalize money and dates, detect duplicates and transfers,
+   classify transactions, calculate P&L, and reconcile reports.
+4. Repository interfaces isolate persistence from business logic. Both
+   in-memory and MongoDB implementations are included.
+5. Gemini and QBO are external adapters behind typed interfaces, with mock
+   transports for automated tests.
+6. The React production build is served by FastAPI so the public deployment
+   uses one HTTPS origin.
+
+See [docs/architecture.md](docs/architecture.md) for the concise component
+flow.
+
+## Data model
+
+- `RawRecord` preserves immutable source values, file hash, row hash, and
+  lineage.
+- `NormalizedTransaction` stores canonical date, description, currency,
+  bank-account number, direction, and integer-cent amount.
+- `ClassificationDecision` stores transaction type, counterparty, account,
+  confidence, evidence, approval status, and version.
+- Transfer-pair and duplicate status are calculated before P&L inclusion.
+- `LedgerLine` and `ProfitAndLoss` provide account-level totals with
+  transaction drill-down.
+- `OutboxItem` stores an immutable QBO intent, idempotency key, payload kind,
+  status, retry metadata, QBO entity ID, and sync token.
+- `ReconciliationRun` stores internal amount, QBO amount, difference, status,
+  and diagnostic candidates for every account.
+
+Amounts use integer cents or exact `Decimal`; domain accounting never uses
+binary floating-point money.
+
+## Classification approach
+
+Deterministic rules run first. They identify transfers, duplicate records,
+known merchants, inflows, refunds, owner activity, fixed assets, COGS, and
+operating expenses. Each result includes confidence and evidence.
+
+Gemini is an optional candidate classifier only for otherwise-unknown
+outflows. It receives minimal normalized fields, must return a strict typed
+schema, and can select only from the fixed 21-account chart. Invalid,
+low-confidence, unavailable, or quota-limited AI results fall back to manual
+review. Gemini cannot approve records, change amounts, calculate P&L, or call
+QBO. Human-approved decisions are authoritative.
+
+## QuickBooks integration
+
+The QBO adapter is restricted to the Intuit Development Sandbox and the
+expected BrightFix Home Services LLC realm. OAuth state is one-time and
+expiring; access and refresh tokens are encrypted before repository storage.
+The account preflight requires all 21 numbered accounts and explicitly reuses
+existing QBO account ID `114` for `6060 Utilities`.
+
+Approved transactions become outbox items before any network write. A Sandbox
+write additionally requires a server-side enable flag, a one-time access
+grant, exact confirmation text, an item preview, account preflight, and an
+execution lease. The QBO entity ID and sync token are retained after success.
+The report adapter requests Cash-basis Profit and Loss data for an exact period
+and supports QBO's valid `NoReportData=true` empty-report shape.
+
+The current public deadline deployment does not contain QBO credentials and
+does not execute QBO writes.
+
+## Duplicate prevention
+
+Source rows retain stable hashes, and normalized transactions receive
+deterministic fingerprints derived from canonical business fields. Duplicate
+detection runs before classification and excludes duplicate extras from P&L
+and sync candidates. Overlapping uploads are checked through repository
+indexes rather than silently creating another economic transaction.
+
+QBO posting uses a separate idempotency key based on Sandbox realm,
+transaction identity, and classification version. The outbox repository
+enforces uniqueness, and the gateway sends a stable QBO request ID so retries
+do not create another transaction.
+
+## Assumptions
+
+- The challenge workbook is synthetic, denominated in USD, and covers
+  2026-04-01 through 2026-06-30.
+- Account numbers in the supplied 21-account chart are authoritative.
+- Bank-account inflows are positive and outflows are negative after
+  normalization.
+- Cash-basis P&L excludes transfers, owner activity, duplicates, and
+  fixed-asset purchases.
+- Low-confidence and exceptional records require human approval.
+- Only BrightFix Home Services LLC in a QBO Development Sandbox is in scope;
+  Production QBO and real customer data are prohibited.
+
+## Known limitations
+
+- The public deadline deployment uses an in-memory repository; data disappears
+  when the free Render instance restarts or sleeps.
+- MongoDB Atlas, live Gemini classification, and live QBO OAuth are not enabled
+  in the public deployment because secrets are intentionally absent.
+- No real QBO Sandbox transaction write has been executed or claimed.
+- The verified QBO Cash P&L response is currently an empty
+  `NoReportData=true` report because no challenge transactions were posted.
+- The public demo is a shared workspace without login, tenant isolation, RBAC,
+  or per-user data separation. It must not receive sensitive data.
+- The free Render service can sleep and may take approximately 50 seconds to
+  respond to the first request.
+- Production enablement still requires Atlas configuration, secret injection,
+  an Intuit redirect URI, BrightFix OAuth consent, and explicit authorization
+  before the first Sandbox write.
 
 ## Tests
 

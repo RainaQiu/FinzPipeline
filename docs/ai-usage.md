@@ -1,5 +1,40 @@
 # AI usage and controls
 
+## Tools used
+
+- **OpenAI Codex:** development assistance for architecture translation,
+  implementation, tests, documentation, deployment configuration, and
+  debugging.
+- **ChatGPT/Codex conversation:** requirements clarification, accounting-risk
+  review, demo planning, and submission wording.
+- **Gemini adapter:** optional runtime candidate classification for
+  otherwise-unknown outflows. Gemini is disabled in the zero-secret public
+  deployment.
+
+## What AI generated
+
+AI assisted with code scaffolding, domain and repository implementations,
+FastAPI and React integration, automated test cases, deployment files, and
+technical documentation. Runtime Gemini, when enabled, may generate only an
+account/type/confidence/explanation candidate inside a strict schema.
+
+AI did not supply or alter the challenge source data, approve accounting
+decisions, create QBO credentials, authorize QBO writes, or determine final
+reported amounts without deterministic validation.
+
+## What was independently validated
+
+The developer reviewed the approved architecture, source workbook mapping,
+accounting sign conventions, P&L inclusion rules, and the 21-account
+whitelist. Automated golden-data checks were used to validate source-row
+counts, duplicate detection, transfer pairing, and consolidated P&L totals.
+
+The developer also used read-only Intuit API Explorer requests to verify the
+BrightFix Home Services LLC Sandbox, all 21 active numbered accounts, the
+existing `6060 Utilities` mapping to QBO account ID `114`, and the QBO
+Cash-basis ProfitAndLoss empty-report contract. No real QBO transaction write
+or completed real-QBO reconciliation is claimed.
+
 Codex assisted development; it is not a runtime accounting dependency.
 Gemini is the optional runtime candidate classifier required by the
 challenge. It is subordinate to deterministic accounting logic and may

@@ -20,10 +20,14 @@ unit-of-work interface. In-memory repositories support isolated tests and the
 default demo. Async MongoDB repositories persist domain collections and
 indexes. QBO and AI are external ports with fakes for tests.
 
-The current application service retains upload bytes, duplicate/transfer
-working sets, sync-run views, and reconciliation-run views in process memory.
-Those orchestration resources must move to repositories before multi-process
-production deployment.
+The deadline Render profile uses the in-memory repository so it can be
+demonstrated without cloud credentials. The MongoDB implementation persists
+uploads, normalized transactions, decisions, pipeline contexts, sync runs,
+outbox items, OAuth state, encrypted QBO connection metadata, access grants,
+audit events, and reconciliation runs.
 
-QBO execution code has a separate explicit `allow_writes` gate and is not wired
-to any API endpoint. The exposed sync endpoint only creates outbox plans.
+QBO execution is wired only through a guarded Sandbox endpoint. It requires a
+server-side write-enable flag, one-time access grant, exact confirmation,
+account preflight, an item preview, execution lease, and the lower-level
+`allow_writes` gate. The public deadline profile supplies no QBO credentials
+and keeps writes disabled.
