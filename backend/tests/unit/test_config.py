@@ -35,8 +35,10 @@ def test_secret_settings_redact_string_representation(monkeypatch):
     monkeypatch.setenv("QBO_CLIENT_ID", "private-client-id")
     monkeypatch.setenv("QBO_CLIENT_SECRET", "private-client-secret")
     monkeypatch.setenv("QBO_REDIRECT_URI", "http://localhost/callback")
+    monkeypatch.setenv("FINZ_DEMO_ACCESS_CODE", "private-interviewer-code")
 
     settings = Settings.from_environment(require_qbo=True)
 
     assert "private-password" not in str(settings.mongodb_uri)
     assert "private-client-secret" not in str(settings.qbo_client_secret)
+    assert "private-interviewer-code" not in repr(settings)

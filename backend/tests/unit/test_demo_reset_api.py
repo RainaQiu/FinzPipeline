@@ -28,6 +28,7 @@ def _settings(secret: SecretStr | None = SecretStr("dedicated-reset-secret")) ->
         public_base_url="http://localhost:8000",
         frontend_static_dir=None,
         demo_reset_secret=secret,
+        demo_access_code=SecretStr("Finz-Interview-9vK2mR6x"),
     )
 
 

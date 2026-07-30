@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from app.api.errors import install_error_handlers
 from app.api.health import router as health_router
+from app.api.demo_access_grants import router as demo_access_grants_router
 from app.api.demo_reset import router as demo_reset_router
 from app.api.classifications import router as classifications_router
 from app.api.qbo_oauth import router as qbo_oauth_router
@@ -22,6 +23,7 @@ from app.integrations.quickbooks.client import QuickBooksClient
 from app.repositories.memory import InMemoryUnitOfWork
 from app.repositories.mongo import MongoUnitOfWork
 from app.services.ledger_bridge import LedgerBridgeService
+from app.services.demo_access_grants import DemoAccessGrantService
 
 
 class _TransactionCapabilityError(RuntimeError):
@@ -65,6 +67,7 @@ def create_app(
     qbo_gateway=None,
     ai_provider=None,
     ledger_bridge: LedgerBridgeService | None = None,
+    demo_access_grant_service: DemoAccessGrantService | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_environment(require_qbo=False)
     settings.validate_public_runtime()
@@ -127,9 +130,17 @@ def create_app(
     app.state.ledger_bridge = ledger_bridge or LedgerBridgeService(
         app.state.unit_of_work
     )
+    app.state.demo_access_grant_service = (
+        demo_access_grant_service
+        or DemoAccessGrantService(
+            app.state.unit_of_work,
+            access_code=settings.demo_access_code,
+        )
+    )
 
     install_error_handlers(app)
     app.include_router(health_router)
+    app.include_router(demo_access_grants_router)
     app.include_router(demo_reset_router)
     app.include_router(uploads_router)
     app.include_router(transactions_router)

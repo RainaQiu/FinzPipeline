@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from hmac import compare_digest
 import os
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,6 +28,7 @@ class Settings:
     public_base_url: str
     frontend_static_dir: Path | None
     demo_reset_secret: SecretStr | None
+    demo_access_code: SecretStr | None = None
 
     @classmethod
     def from_environment(cls, require_qbo: bool = False) -> "Settings":
@@ -83,6 +85,11 @@ class Settings:
                 if (value := os.getenv("FINZ_DEMO_RESET_SECRET", "").strip())
                 else None
             ),
+            demo_access_code=(
+                SecretStr(value)
+                if (value := os.getenv("FINZ_DEMO_ACCESS_CODE", "").strip())
+                else None
+            ),
         )
 
     def validate_public_runtime(self) -> None:
@@ -129,6 +136,30 @@ class Settings:
             or reset_secret in {"password", "changeme", "demo-reset-secret"}
         ):
             raise ConfigurationError(("FINZ_DEMO_RESET_SECRET",))
+        access_code = (
+            self.demo_access_code.get_secret_value().strip()
+            if self.demo_access_code is not None
+            else ""
+        )
+        normalized_access_code = access_code.lower()
+        if (
+            len(access_code) < 12
+            or len(set(access_code)) < 6
+            or "placeholder" in normalized_access_code
+            or "<" in access_code
+            or normalized_access_code
+            in {"password", "changeme", "interviewer-access-code"}
+        ):
+            raise ConfigurationError(("FINZ_DEMO_ACCESS_CODE",))
+        if compare_digest(
+            access_code,
+            (
+                self.demo_reset_secret.get_secret_value()
+                if self.demo_reset_secret is not None
+                else ""
+            ),
+        ):
+            raise ConfigurationError(("FINZ_DEMO_ACCESS_CODE",))
         if urlparse(self.public_base_url).scheme != "https":
             raise ConfigurationError(("APP_BASE_URL",))
         expected_redirect = (

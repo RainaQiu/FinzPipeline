@@ -27,3 +27,5 @@ services:
         sync: false
       - key: FINZ_DEMO_RESET_SECRET
         sync: false
+      - key: FINZ_DEMO_ACCESS_CODE
+        sync: false

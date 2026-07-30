@@ -44,6 +44,9 @@ Render dashboard (they are deliberately not stored in the blueprint):
   (the redirect is `<APP_BASE_URL>/api/v1/integrations/qbo/callback`).
 - `FINZ_DEMO_RESET_SECRET` to a dedicated random value used only by the weekly
   shared-workspace reset. Do not reuse the interviewer access code.
+- `FINZ_DEMO_ACCESS_CODE` to a strong interviewer access code of at least 12
+  characters. Keep it separate from the reset secret and send it outside the
+  public repository.
 
 The blueprint explicitly selects Render's free plan, so the service may sleep
 when idle and its first request after sleeping may be slow. It also selects the
@@ -74,6 +77,21 @@ a replica set, or mongos) because each lease renewal and collection clear is
 committed atomically. The local standalone Docker MongoDB remains valid for
 ordinary repository development, but the reset endpoint reports unavailable
 there and Atlas-only reset transaction tests are explicitly skipped.
+
+### Interviewer access grants
+
+`POST /api/v1/demo/access-grants` exchanges the configured interviewer access
+code for a random bearer grant that expires after 15 minutes. The response is
+marked `no-store` and returns the bearer only once; the repository stores only
+its SHA-256 hash. A protected operation atomically consumes the grant, so it
+cannot be reused. Invalid codes receive a fixed short delay and a generic
+error. This is deliberately a narrow gate for the shared challenge demo, not
+user authentication or tenant isolation.
+
+The endpoint does not connect to or write QBO. The later guarded Sandbox sync
+step will require both a one-time grant and a separate explicit confirmation;
+the first real QBO Sandbox transaction remains subject to explicit user
+authorization.
 
 ## Tests
 

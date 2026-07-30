@@ -27,6 +27,7 @@ def _settings(**overrides: object) -> Settings:
         "public_base_url": "https://demo.example.com",
         "frontend_static_dir": None,
         "demo_reset_secret": SecretStr("Finz-Reset-7zN4pQ8vK2mR6xC9sL3wT5yH"),
+        "demo_access_code": SecretStr("Finz-Interview-9vK2mR6x"),
     }
     values.update(overrides)
     return Settings(**values)
@@ -54,6 +55,23 @@ def _settings(**overrides: object) -> Settings:
         (
             {"demo_reset_secret": SecretStr("a" * 40)},
             "FINZ_DEMO_RESET_SECRET",
+        ),
+        ({"demo_access_code": None}, "FINZ_DEMO_ACCESS_CODE"),
+        (
+            {"demo_access_code": SecretStr("short")},
+            "FINZ_DEMO_ACCESS_CODE",
+        ),
+        (
+            {"demo_access_code": SecretStr("<interviewer-access-code>")},
+            "FINZ_DEMO_ACCESS_CODE",
+        ),
+        (
+            {
+                "demo_access_code": SecretStr(
+                    "Finz-Reset-7zN4pQ8vK2mR6xC9sL3wT5yH"
+                )
+            },
+            "FINZ_DEMO_ACCESS_CODE",
         ),
     ],
 )
