@@ -50,7 +50,9 @@ class DemoAccessGrantService:
             if self._access_code is not None
             else ""
         )
-        if not expected or not compare_digest(presented_code, expected):
+        presented_digest = sha256(presented_code.encode("utf-8")).digest()
+        expected_digest = sha256(expected.encode("utf-8")).digest()
+        if not expected or not compare_digest(presented_digest, expected_digest):
             await self._sleeper(INVALID_ATTEMPT_DELAY_SECONDS)
             return None
 

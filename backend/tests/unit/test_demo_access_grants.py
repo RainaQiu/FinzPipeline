@@ -45,10 +45,10 @@ def _settings() -> Settings:
 async def test_invalid_code_uses_compare_digest_and_fixed_injected_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compared: list[tuple[str, str]] = []
+    compared: list[tuple[bytes, bytes]] = []
     delays: list[float] = []
 
-    def observed_compare(presented: str, expected: str) -> bool:
+    def observed_compare(presented: bytes, expected: bytes) -> bool:
         compared.append((presented, expected))
         return False
 
@@ -68,7 +68,12 @@ async def test_invalid_code_uses_compare_digest_and_fixed_injected_delay(
     result = await service.issue("incorrect-code")
 
     assert result is None
-    assert compared == [("incorrect-code", ACCESS_CODE)]
+    assert compared == [
+        (
+            sha256(b"incorrect-code").digest(),
+            sha256(ACCESS_CODE.encode("utf-8")).digest(),
+        )
+    ]
     assert delays == [0.25]
 
 
@@ -178,6 +183,24 @@ def test_access_grant_api_returns_bearer_once_and_redacts_invalid_code(
     assert ordinary_demo_api.json()["mode"] == "plan_only"
     assert presented not in repr(AccessGrantRequest(access_code=presented))
     assert presented not in caplog.text
+
+
+def test_access_grant_api_handles_unicode_and_bounds_request_size() -> None:
+    app = create_app(settings=_settings(), unit_of_work=InMemoryUnitOfWork())
+
+    with TestClient(app) as client:
+        unicode_code = client.post(
+            "/api/v1/demo/access-grants",
+            json={"access_code": "错误的访问码🔒"},
+        )
+        oversized = client.post(
+            "/api/v1/demo/access-grants",
+            json={"access_code": "x" * 129},
+        )
+
+    assert unicode_code.status_code == 401
+    assert unicode_code.json() == {"detail": "Access authorization failed"}
+    assert oversized.status_code == 422
 
 
 async def _no_sleep() -> None:

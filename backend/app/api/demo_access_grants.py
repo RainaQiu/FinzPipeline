@@ -1,14 +1,14 @@
 """Anonymous access-code exchange for a one-time protected-operation grant."""
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 
 router = APIRouter(prefix="/api/v1/demo", tags=["demo-access"])
 
 
 class AccessGrantRequest(BaseModel):
-    access_code: SecretStr
+    access_code: SecretStr = Field(min_length=1, max_length=128)
 
 
 class AccessGrantResponse(BaseModel):
