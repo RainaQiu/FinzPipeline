@@ -170,7 +170,7 @@ def test_qbo_state_survives_app_instance_when_repository_is_shared():
     assert response.status_code == 200
 
 
-def test_qbo_callback_reports_safe_upstream_failure_stage():
+def test_qbo_callback_reports_safe_upstream_failure_stage_without_upstream_details():
     client = TestClient(create_app(qbo_client=FailingQboClient()))
     connect_response = client.get(
         "/api/v1/integrations/qbo/connect",
@@ -189,12 +189,11 @@ def test_qbo_callback_reports_safe_upstream_failure_stage():
             "message": "QuickBooks integration failed",
             "stage": "token_exchange",
             "upstream_status": 400,
-            "upstream_error": "invalid_client",
         }
     }
 
 
-def test_qbo_callback_reports_safe_unexpected_exception_type():
+def test_qbo_callback_redacts_unexpected_exception_type():
     client = TestClient(create_app(qbo_client=UnexpectedFailingQboClient()))
     connect_response = client.get(
         "/api/v1/integrations/qbo/connect",
@@ -212,6 +211,5 @@ def test_qbo_callback_reports_safe_unexpected_exception_type():
         "detail": {
             "message": "QuickBooks authorization or company verification failed",
             "stage": "unexpected",
-            "exception_type": "KeyError",
         }
     }
