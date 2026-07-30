@@ -96,6 +96,7 @@ async def test_request_uses_fixed_host_header_key_and_minimal_normalized_facts()
     body = observed["body"]
     assert isinstance(body, dict)
     assert body["generationConfig"]["responseMimeType"] == "application/json"
+    assert body["generationConfig"]["maxOutputTokens"] == 256
     schema = body["generationConfig"]["responseJsonSchema"]
     assert schema["additionalProperties"] is False
     assert set(schema["properties"]) == {
@@ -124,6 +125,35 @@ async def test_request_uses_fixed_host_header_key_and_minimal_normalized_facts()
         "qbo",
     ):
         assert forbidden not in serialized.lower()
+
+
+@pytest.mark.asyncio
+async def test_request_bounds_public_description_length() -> None:
+    observed: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["body"] = json.loads(request.content)
+        return gemini_response(valid_candidate())
+
+    transaction = classification_input()
+    transaction = ClassificationInput(
+        transaction_id=transaction.transaction_id,
+        description="X" * 2_000,
+        amount_minor=transaction.amount_minor,
+        direction=transaction.direction,
+        transaction_date=transaction.transaction_date,
+        bank_account_number=transaction.bank_account_number,
+    )
+    provider = GeminiClassificationProvider(
+        api_key="gemini-test-secret",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await provider.classify(transaction, allowed_accounts()) is not None
+    body = observed["body"]
+    assert isinstance(body, dict)
+    sent_facts = json.loads(body["contents"][0]["parts"][0]["text"])
+    assert sent_facts["transaction"]["description_normalized"] == "X" * 256
 
 
 @pytest.mark.asyncio

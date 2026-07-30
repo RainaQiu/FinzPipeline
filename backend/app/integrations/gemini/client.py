@@ -24,6 +24,8 @@ from app.integrations.ai.protocol import (
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://generativelanguage.googleapis.com"
+_MAX_DESCRIPTION_CHARS = 256
+_MAX_OUTPUT_TOKENS = 256
 _MODEL_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, *range(500, 600)})
 _TRANSACTION_TYPES = tuple(item.value for item in TransactionType)
@@ -131,7 +133,7 @@ def _request_body(
     schema["properties"]["transaction_type"]["enum"] = list(_TRANSACTION_TYPES)
     prompt = {
         "transaction": {
-            "description_normalized": transaction.description,
+            "description_normalized": transaction.description[:_MAX_DESCRIPTION_CHARS],
             "direction": transaction.direction.value,
         },
         "allowed_accounts": [
@@ -151,6 +153,7 @@ def _request_body(
         ],
         "generationConfig": {
             "temperature": 0,
+            "maxOutputTokens": _MAX_OUTPUT_TOKENS,
             "responseMimeType": "application/json",
             "responseJsonSchema": schema,
         },
