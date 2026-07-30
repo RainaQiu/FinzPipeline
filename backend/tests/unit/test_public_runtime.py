@@ -56,6 +56,87 @@ def test_production_rejects_unsafe_runtime_configuration(
 
 
 STATIC_BUILD = Path(__file__).parent / "fixtures" / "frontend-build"
+PROJECT_ROOT = Path(__file__).parents[3]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "missing_name"),
+    [
+        (
+            {"qbo_base_url": "https://quickbooks.api.intuit.com/v3"},
+            "QBO_BASE_URL",
+        ),
+        (
+            {"qbo_authorization_url": "https://example.com/connect/oauth2"},
+            "QBO_AUTHORIZATION_URL",
+        ),
+        (
+            {"qbo_token_url": "https://example.com/oauth2/v1/tokens/bearer"},
+            "QBO_TOKEN_URL",
+        ),
+        ({"qbo_scope": "openid"}, "QBO_SCOPE"),
+        (
+            {"qbo_redirect_uri": "https://other.example.com/api/v1/integrations/qbo/callback"},
+            "QBO_REDIRECT_URI",
+        ),
+    ],
+)
+def test_production_rejects_non_sandbox_or_untrusted_qbo_endpoints(
+    overrides: dict[str, object], missing_name: str
+) -> None:
+    settings = _settings(
+        app_environment="production",
+        frontend_static_dir=STATIC_BUILD,
+        **overrides,
+    )
+
+    with pytest.raises(ConfigurationError) as error:
+        create_app(settings=settings, unit_of_work=InMemoryUnitOfWork())
+
+    assert error.value.missing_names == (missing_name,)
+
+
+def test_render_blueprint_uses_free_plan_and_mongo_repository() -> None:
+    """The checked-in MVP blueprint must be free-tier and production-safe by default."""
+    blueprint = (PROJECT_ROOT / "render.yaml").read_text(encoding="utf-8")
+
+    assert "plan: free" in blueprint
+    assert "key: FINZ_REPOSITORY_BACKEND\n        value: mongo" in blueprint
+
+
+def test_production_startup_fails_when_mongo_index_initialization_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnavailableMongo:
+        closed = False
+
+        async def create_indexes(self) -> None:
+            raise RuntimeError("mongodb://user:secret@host failed")
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    unavailable = UnavailableMongo()
+    monkeypatch.setattr(
+        "app.main.MongoUnitOfWork.from_uri",
+        lambda *_args, **_kwargs: unavailable,
+    )
+    app = create_app(
+        settings=_settings(
+            app_environment="production",
+            frontend_static_dir=STATIC_BUILD,
+        )
+    )
+
+    with pytest.raises(
+        RuntimeError, match="repository initialization failed"
+    ) as error:
+        with TestClient(app):
+            pass
+
+    assert error.value.__cause__ is None
+    assert "secret" not in repr(error.value)
+    assert unavailable.closed is True
 
 
 def test_development_serves_static_assets_and_spa_deep_links() -> None:

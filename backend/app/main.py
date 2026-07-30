@@ -84,6 +84,11 @@ def create_app(
                 await selected_uow.create_indexes()
             except Exception:
                 application.state.repository_ready = False
+                if settings.app_environment == "production":
+                    await selected_uow.aclose()
+                    raise RuntimeError(
+                        "Required repository initialization failed"
+                    ) from None
         yield
         if owns_unit_of_work:
             await selected_uow.aclose()

@@ -96,7 +96,27 @@ class Settings:
             raise ConfigurationError(("QBO_CLIENT_SECRET",))
         if not self.qbo_redirect_uri:
             raise ConfigurationError(("QBO_REDIRECT_URI",))
+        if self.qbo_authorization_url.rstrip("/") != (
+            "https://appcenter.intuit.com/connect/oauth2"
+        ):
+            raise ConfigurationError(("QBO_AUTHORIZATION_URL",))
+        if self.qbo_token_url.rstrip("/") != (
+            "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+        ):
+            raise ConfigurationError(("QBO_TOKEN_URL",))
+        if self.qbo_base_url.rstrip("/") != (
+            "https://sandbox-quickbooks.api.intuit.com/v3"
+        ):
+            raise ConfigurationError(("QBO_BASE_URL",))
+        if self.qbo_scope != "com.intuit.quickbooks.accounting":
+            raise ConfigurationError(("QBO_SCOPE",))
         if urlparse(self.public_base_url).scheme != "https":
             raise ConfigurationError(("APP_BASE_URL",))
+        expected_redirect = (
+            self.public_base_url.rstrip("/")
+            + "/api/v1/integrations/qbo/callback"
+        )
+        if self.qbo_redirect_uri != expected_redirect:
+            raise ConfigurationError(("QBO_REDIRECT_URI",))
         if self.frontend_static_dir is None or not (self.frontend_static_dir / "index.html").is_file():
             raise RuntimeError("Production startup requires a built frontend directory with index.html")

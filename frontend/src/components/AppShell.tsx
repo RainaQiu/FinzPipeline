@@ -24,7 +24,7 @@ const demoDisclosure = (
     <span> Do not upload sensitive or real financial data.</span>
     <span>
       Authentication, tenant isolation, and per-user data separation are intentionally outside
-      this challenge demo scope.
+      this challenge demo scope; a production version would require all three.
     </span>
   </aside>
 );

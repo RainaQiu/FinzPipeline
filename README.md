@@ -43,6 +43,11 @@ Render dashboard (they are deliberately not stored in the blueprint):
 - Sandbox-only `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, and `QBO_REDIRECT_URI`
   (the redirect is `<APP_BASE_URL>/api/v1/integrations/qbo/callback`).
 
+The blueprint explicitly selects Render's free plan, so the service may sleep
+when idle and its first request after sleeping may be slow. It also selects the
+Mongo repository backend; production will remain unavailable until a valid
+Atlas URI is configured.
+
 Production refuses to start with the in-memory repository, placeholder Mongo
 settings, non-sandbox QBO, missing QBO settings, a non-HTTPS public URL, or a
 missing frontend build. `/health` is liveness; `/ready` reports dependency

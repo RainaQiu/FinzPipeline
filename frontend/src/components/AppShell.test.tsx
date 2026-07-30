@@ -44,7 +44,7 @@ describe("AppShell", () => {
       "Shared demonstration environment. Do not upload sensitive or real financial data.",
     );
     expect(disclosure).toHaveTextContent(
-      /Authentication, tenant isolation, and per-user data separation are intentionally outside/i,
+      /production version would require all three/i,
     );
   });
 });
