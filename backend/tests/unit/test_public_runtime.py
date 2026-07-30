@@ -62,6 +62,10 @@ def _settings(**overrides: object) -> Settings:
             "FINZ_DEMO_ACCESS_CODE",
         ),
         (
+            {"demo_access_code": SecretStr("a" * 20)},
+            "FINZ_DEMO_ACCESS_CODE",
+        ),
+        (
             {"demo_access_code": SecretStr("<interviewer-access-code>")},
             "FINZ_DEMO_ACCESS_CODE",
         ),

@@ -132,7 +132,9 @@ async def test_default_tokens_are_distinct_high_entropy_urlsafe_bearers() -> Non
     assert first.token not in repr(first)
 
 
-def test_access_grant_api_returns_bearer_once_and_redacts_invalid_code() -> None:
+def test_access_grant_api_returns_bearer_once_and_redacts_invalid_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     uow = InMemoryUnitOfWork()
     service = DemoAccessGrantService(
         uow,
@@ -158,6 +160,7 @@ def test_access_grant_api_returns_bearer_once_and_redacts_invalid_code() -> None
             json={"access_code": ACCESS_CODE},
         )
         ordinary = client.get("/health")
+        ordinary_demo_api = client.get("/api/v1/integrations/qbo/status")
 
     assert rejected.status_code == 401
     assert rejected.json() == {"detail": "Access authorization failed"}
@@ -171,7 +174,10 @@ def test_access_grant_api_returns_bearer_once_and_redacts_invalid_code() -> None
     assert accepted.headers["cache-control"] == "no-store"
     assert "hash" not in accepted.text
     assert ordinary.status_code == 200
+    assert ordinary_demo_api.status_code == 200
+    assert ordinary_demo_api.json()["mode"] == "plan_only"
     assert presented not in repr(AccessGrantRequest(access_code=presented))
+    assert presented not in caplog.text
 
 
 async def _no_sleep() -> None:
