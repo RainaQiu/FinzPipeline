@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol, Sequence
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from app.domain.accounts import AccountType
 from app.domain.transactions import Direction, NormalizedTransaction
 
@@ -37,26 +39,21 @@ class ClassificationInput:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class ClassificationProposal:
+class ClassificationProposal(BaseModel):
+    """The complete and deliberately narrow authority granted to an AI provider."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
     transaction_type: str
-    counterparty: str | None
     account_number: str
-    confidence: float
-    needs_review: bool
-    evidence: tuple[str, ...]
-    # These fields deliberately exist only so post-validation can reject a
-    # provider attempting to take ownership of bank-controlled values.
-    amount_minor: int | None = None
-    transaction_date: date | None = None
-    bank_transaction_id: str | None = None
-    transaction_id: str | None = None
+    explanation: str = Field(min_length=1, max_length=500)
+    confidence_basis_points: int = Field(ge=0, le=10000)
 
 
 class ClassificationProvider(Protocol):
     async def classify(
         self, transaction: ClassificationInput, allowed_accounts: Sequence[AllowedAccount]
-    ) -> ClassificationProposal: ...
+    ) -> ClassificationProposal | None: ...
 
 
 class DisabledClassificationProvider:
@@ -64,12 +61,5 @@ class DisabledClassificationProvider:
 
     async def classify(
         self, transaction: ClassificationInput, allowed_accounts: Sequence[AllowedAccount]
-    ) -> ClassificationProposal:
-        return ClassificationProposal(
-            transaction_type="unknown",
-            counterparty=None,
-            account_number="",
-            confidence=0.0,
-            needs_review=True,
-            evidence=("AI classification is disabled.",),
-        )
+    ) -> ClassificationProposal | None:
+        return None

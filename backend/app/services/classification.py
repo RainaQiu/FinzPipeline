@@ -71,7 +71,7 @@ def classify_transaction(
         decision = _decision(
             transaction, validated.proposal.account_number, validated.transaction_type,
             DecisionSource.AI, validated.confidence_basis_points, True, "ai_proposal",
-            "AI-only proposal; human review is required."
+            f"AI candidate: {validated.proposal.explanation.strip()} Human review is required."
         )
     else:
         decision = _decision(
@@ -94,14 +94,16 @@ def validate_proposal(
     rule_result: ClassificationDecision | None,
 ) -> ValidatedProposal:
     """Validate a typed proposal after deterministic rules have had precedence."""
-    if any(value is not None for value in (
-        proposal.amount_minor, proposal.transaction_date, proposal.bank_transaction_id, proposal.transaction_id,
-    )):
-        raise ProposalValidationError("AI proposals may not provide amount, date, bank ID, or transaction ID")
-    if not isinstance(proposal.confidence, (int, float)) or isinstance(proposal.confidence, bool):
-        raise ProposalValidationError("proposal confidence must be numeric")
-    if not 0.0 <= float(proposal.confidence) <= 1.0:
-        raise ProposalValidationError("proposal confidence must be between 0 and 1")
+    if (
+        not isinstance(proposal.confidence_basis_points, int)
+        or isinstance(proposal.confidence_basis_points, bool)
+        or not 0 <= proposal.confidence_basis_points <= 10000
+    ):
+        raise ProposalValidationError(
+            "proposal confidence_basis_points must be an integer between 0 and 10000"
+        )
+    if not isinstance(proposal.explanation, str) or not proposal.explanation.strip():
+        raise ProposalValidationError("proposal explanation must be non-empty")
     try:
         transaction_type = TransactionType(proposal.transaction_type)
         validate_accounting_decision(
@@ -116,7 +118,7 @@ def validate_proposal(
     return ValidatedProposal(
         proposal=proposal,
         transaction_type=transaction_type,
-        confidence_basis_points=_clamp_basis_points(float(proposal.confidence) * 10000),
+        confidence_basis_points=proposal.confidence_basis_points,
     )
 
 
