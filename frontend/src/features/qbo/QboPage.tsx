@@ -5,13 +5,33 @@ import { api } from "../../api/client";
 import { ErrorState, LoadingState, PageHeader, StatusBadge } from "../../components/ui";
 
 export function QboPage() {
-  const [realmId, setRealmId] = useState("sandbox-realm");
+  const [accessCode, setAccessCode] = useState("");
+  const [confirmation, setConfirmation] = useState("");
   const status = useQuery({
     queryKey: ["qbo-status"],
     queryFn: api.qboStatus,
   });
   const plan = useMutation({
-    mutationFn: () => api.planQboSync(realmId),
+    mutationFn: () => api.planQboSync(),
+  });
+  const accounts = useQuery({
+    queryKey: ["qbo-account-preflight"],
+    queryFn: api.qboAccountPreflight,
+    enabled: false,
+  });
+  const firstItemId = plan.data?.item_ids[0];
+  const prewrite = useQuery({
+    queryKey: ["qbo-prewrite", firstItemId],
+    queryFn: () => api.qboPrewrite(firstItemId!),
+    enabled: Boolean(firstItemId),
+  });
+  const execute = useMutation({
+    mutationFn: async () => {
+      const itemId = firstItemId;
+      if (!itemId) throw new Error("Build a pending outbox plan first.");
+      const grant = await api.issueDemoGrant(accessCode);
+      return api.executeQboItem(itemId, grant.grant_token, confirmation);
+    },
   });
 
   return (
@@ -20,7 +40,11 @@ export function QboPage() {
         eyebrow="QuickBooks Online"
         title="QBO Sync"
         description="Prepare an auditable outbox plan without authorizing external accounting writes."
-        actions={<StatusBadge tone="review">Plan-only mode</StatusBadge>}
+        actions={
+          <StatusBadge tone={status.data?.connected ? "success" : "review"}>
+            {status.data?.connected ? "Real Sandbox read-only" : "Demo/local mode"}
+          </StatusBadge>
+        }
       />
 
       {status.isLoading ? <LoadingState label="Checking QBO mode" /> : null}
@@ -33,35 +57,76 @@ export function QboPage() {
             </div>
             <div>
               <p className="eyebrow">Execution boundary</p>
-              <h2 id="execution-title">Writes disabled</h2>
+              <h2 id="execution-title">Writes require access + confirmation</h2>
               <p>
-                Approved journal entries can be prepared as a pending outbox plan,
-                but they cannot be posted or retried.
+                Ordinary visitors can inspect plans. A Sandbox write additionally
+                requires the emailed access code, exact confirmation, and a
+                server-side enable flag that remains off by default.
               </p>
             </div>
             <dl className="boundary-facts">
               <div>
                 <dt>Mode</dt>
-                <dd>Plan only</dd>
+                <dd>{status.data.mode === "sandbox_read_only" ? "Real Sandbox read" : "Demo/local"}</dd>
               </div>
               <div>
-                <dt>Execution authorized</dt>
-                <dd>No</dd>
+                <dt>Connected company</dt>
+                <dd>{status.data.company_name ?? "Not connected"}</dd>
               </div>
               <div>
                 <dt>Transaction write network</dt>
-                <dd>No</dd>
+                <dd>
+                  {status.data.transaction_write_network_accessed
+                    ? "Attempt recorded"
+                    : "No attempt recorded"}
+                </dd>
               </div>
             </dl>
             <div className="network-note" role="status">
               <ShieldCheck aria-hidden="true" />
               <span>
-                <strong>No QBO transaction write network access has occurred.</strong>
+                <strong>
+                  {status.data.transaction_write_network_accessed
+                    ? "A QBO Sandbox write attempt is recorded in this demo workspace."
+                    : "No QBO transaction write network access has occurred."}
+                </strong>
                 {" "}
                 OAuth and read-only verification may use QBO separately; this
                 workspace only builds deterministic transaction payload previews.
               </span>
             </div>
+            {!status.data.connected ? (
+              <a
+                className="button secondary full"
+                href="/api/v1/integrations/qbo/connect"
+              >
+                Connect BrightFix QBO Sandbox
+              </a>
+            ) : (
+              <>
+                <button
+                  className="button secondary full"
+                  type="button"
+                  disabled={accounts.isFetching}
+                  onClick={() => accounts.refetch()}
+                >
+                  {accounts.isFetching
+                    ? "Checking 21 accounts…"
+                    : "Run 21-account preflight"}
+                </button>
+                {accounts.data ? (
+                  <div className="plan-result" role="status">
+                    <CheckCircle2 aria-hidden="true" />
+                    <span>
+                      <strong>{accounts.data.account_count} accounts ready.</strong>
+                      {" "}
+                      Utilities 6060 reuses QBO Id {accounts.data.mapping["6060"]}.
+                    </span>
+                  </div>
+                ) : null}
+                {accounts.isError ? <ErrorState error={accounts.error} /> : null}
+              </>
+            )}
           </section>
 
           <section className="outbox-planner" aria-labelledby="outbox-title">
@@ -71,14 +136,6 @@ export function QboPage() {
                 <h2 id="outbox-title">Plan a sync batch</h2>
               </div>
             </div>
-            <label className="field">
-              <span>QBO realm ID</span>
-              <input
-                value={realmId}
-                onChange={(event) => setRealmId(event.target.value)}
-                placeholder="sandbox-realm"
-              />
-            </label>
             <div className="plan-flow" aria-label="Plan-only workflow">
               <span>Approved classifications</span>
               <ArrowRight aria-hidden="true" />
@@ -100,10 +157,63 @@ export function QboPage() {
             <button
               className="button primary full"
               type="button"
-              disabled={!realmId.trim() || plan.isPending}
+              disabled={plan.isPending}
               onClick={() => plan.mutate()}
             >
               {plan.isPending ? "Planning batch…" : "Build pending outbox plan"}
+            </button>
+            <label className="field">
+              <span>Interviewer access code</span>
+              <input
+                type="password"
+                autoComplete="off"
+                value={accessCode}
+                onChange={(event) => setAccessCode(event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Type: POST TO BRIGHTFIX QBO SANDBOX</span>
+              <input
+                value={confirmation}
+                onChange={(event) => setConfirmation(event.target.value)}
+              />
+            </label>
+            {execute.isError ? <ErrorState error={execute.error} /> : null}
+            {execute.data ? (
+              <div className="plan-result" role="status">
+                <CheckCircle2 aria-hidden="true" />
+                <strong>Sandbox item status: {execute.data.status}</strong>
+              </div>
+            ) : null}
+            {prewrite.data ? (
+              <dl className="boundary-facts" aria-label="First planned item preview">
+                <div>
+                  <dt>First entity</dt>
+                  <dd>{prewrite.data.entity_type}</dd>
+                </div>
+                <div>
+                  <dt>Amount</dt>
+                  <dd>{prewrite.data.amount ?? "Unavailable"}</dd>
+                </div>
+                <div>
+                  <dt>Server write flag</dt>
+                  <dd>{prewrite.data.writes_enabled ? "Enabled" : "Disabled"}</dd>
+                </div>
+              </dl>
+            ) : null}
+            {prewrite.isError ? <ErrorState error={prewrite.error} /> : null}
+            <button
+              className="button secondary full"
+              type="button"
+              disabled={
+                !prewrite.data ||
+                !accessCode ||
+                confirmation !== "POST TO BRIGHTFIX QBO SANDBOX" ||
+                execute.isPending
+              }
+              onClick={() => execute.mutate()}
+            >
+              {execute.isPending ? "Submitting…" : "Submit first planned item to Sandbox"}
             </button>
           </section>
         </div>

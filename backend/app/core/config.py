@@ -33,6 +33,10 @@ class Settings:
     gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-3.5-flash-lite"
     gemini_max_candidates_per_upload: int = 10
+    qbo_token_encryption_key: SecretStr | None = None
+    qbo_expected_realm_id: str | None = None
+    qbo_expected_company_name: str = "BrightFix Home Services LLC"
+    qbo_sandbox_writes_enabled: bool = False
 
     @classmethod
     def from_environment(cls, require_qbo: bool = False) -> "Settings":
@@ -112,6 +116,24 @@ class Settings:
                 or "gemini-3.5-flash-lite"
             ),
             gemini_max_candidates_per_upload=gemini_max_candidates,
+            qbo_token_encryption_key=(
+                SecretStr(value)
+                if (value := os.getenv("QBO_TOKEN_ENCRYPTION_KEY", "").strip())
+                else None
+            ),
+            qbo_expected_realm_id=(
+                os.getenv("QBO_EXPECTED_REALM_ID", "").strip() or None
+            ),
+            qbo_expected_company_name=(
+                os.getenv(
+                    "QBO_EXPECTED_COMPANY_NAME",
+                    "BrightFix Home Services LLC",
+                ).strip()
+                or "BrightFix Home Services LLC"
+            ),
+            qbo_sandbox_writes_enabled=_strict_bool(
+                "QBO_SANDBOX_WRITES_ENABLED", default=False
+            ),
         )
 
     def validate_public_runtime(self) -> None:
@@ -145,6 +167,10 @@ class Settings:
             raise ConfigurationError(("QBO_BASE_URL",))
         if self.qbo_scope != "com.intuit.quickbooks.accounting":
             raise ConfigurationError(("QBO_SCOPE",))
+        if self.qbo_token_encryption_key is None:
+            raise ConfigurationError(("QBO_TOKEN_ENCRYPTION_KEY",))
+        if not self.qbo_expected_realm_id:
+            raise ConfigurationError(("QBO_EXPECTED_REALM_ID",))
         reset_secret = (
             self.demo_reset_secret.get_secret_value().strip().lower()
             if self.demo_reset_secret is not None

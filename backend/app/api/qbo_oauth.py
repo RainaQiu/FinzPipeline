@@ -91,10 +91,9 @@ async def callback(
                 "message": "QuickBooks integration failed",
                 "stage": exc.stage,
                 "upstream_status": exc.upstream_status,
-                "upstream_error": exc.upstream_error,
             },
-        ) from exc
-    except Exception as exc:
+        ) from None
+    except Exception:
         raise HTTPException(
             status_code=502,
             detail={
@@ -102,6 +101,5 @@ async def callback(
                     "QuickBooks authorization or company verification failed"
                 ),
                 "stage": "unexpected",
-                "exception_type": type(exc).__name__,
             },
-        ) from exc
+        ) from None

@@ -110,6 +110,8 @@ def _validate_report_scope(
     header = payload.get("Header")
     if not isinstance(header, Mapping) or not header:
         raise ValueError("QBO P&L Header is required for scoped reconciliation")
+    if str(header.get("ReportName", "")).casefold() != "profitandloss":
+        raise ValueError("QBO report must be ProfitAndLoss")
     if require_cash and str(header.get("ReportBasis", "")).casefold() != "cash":
         raise ValueError("QBO P&L must use Cash report basis")
     actual_period = (header.get("StartPeriod"), header.get("EndPeriod"))
@@ -159,6 +161,10 @@ def parse_qbo_pnl(
         account_totals=totals,
         raw_snapshot=payload,
         net_profit_minor=net_profit,
+        no_report_data=bool(
+            isinstance(payload.get("Header"), Mapping)
+            and payload["Header"].get("NoReportData") is True
+        ),
     )
 
 

@@ -5,7 +5,7 @@ class FakeQuickBooksGateway:
         self.calls = []
         self.response = response
 
-    async def create_entity(self, kind, payload):
+    async def create_entity(self, kind, payload, *, request_id):
         self.calls.append((kind, payload))
         if isinstance(self.response, BaseException):
             raise self.response

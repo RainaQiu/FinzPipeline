@@ -17,7 +17,7 @@
 7. On **Internal P&L**, select 2026-04-01 through 2026-06-30. Confirm revenue
    30,027,500 cents, COGS 9,385,000 cents, operating expenses 13,824,500 cents,
    and net profit 6,818,000 cents.
-8. On **QBO Sync**, create a plan and confirm the UI reports plan-only mode and
+8. On **QBO Sync**, create a plan and confirm the UI reports the guarded mode and
    `execution_authorized=false`. Do not attempt a real QBO write.
 9. On **Reconciliation**, supply a Cash/USD report snapshot for the same exact
    period. A valid matching snapshot shows zero-cent differences.

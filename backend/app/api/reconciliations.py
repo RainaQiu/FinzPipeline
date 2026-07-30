@@ -3,7 +3,7 @@
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 
 from app.api.dependencies import get_ledger_bridge
@@ -21,6 +21,13 @@ class ReconciliationRequest(BaseModel):
     qbo_report: dict[str, Any]
 
 
+class QboReconciliationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_date: date
+    end_date: date
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_reconciliation(
     request: ReconciliationRequest,
@@ -31,6 +38,31 @@ async def create_reconciliation(
         end_date=request.end_date,
         qbo_report=request.qbo_report,
     )
+
+
+@router.post("/qbo", status_code=status.HTTP_201_CREATED)
+async def create_qbo_reconciliation(
+    payload: QboReconciliationRequest,
+    request: Request,
+    service: LedgerBridgeService = Depends(get_ledger_bridge),
+) -> dict[str, object]:
+    runtime = request.app.state.qbo_runtime
+    if runtime is None:
+        raise HTTPException(503, "QBO Sandbox read integration is unavailable")
+    try:
+        report = await runtime.profit_and_loss(payload.start_date, payload.end_date)
+        result = await service.reconcile_local(
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            qbo_report=report,
+        )
+        result["source"] = "qbo_sandbox"
+        result["no_report_data"] = bool(
+            report.get("Header", {}).get("NoReportData") is True
+        )
+        return result
+    except Exception:
+        raise HTTPException(502, "QBO reconciliation failed") from None
 
 
 @router.get("/{run_id}")

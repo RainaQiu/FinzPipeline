@@ -3,6 +3,8 @@ import type {
   Classification,
   PnlReport,
   ProcessResult,
+  QboAccountPreflight,
+  QboPrewrite,
   QboStatus,
   QboSyncPlan,
   ReconciliationResult,
@@ -19,9 +21,11 @@ const errorEnvelope = z.object({
 
 const qboStatusSchema = z
   .object({
-    mode: z.literal("plan_only"),
+    mode: z.enum(["demo_local", "sandbox_read_only"]),
+    connected: z.boolean(),
+    company_name: z.string().nullable(),
     execution_authorized: z.literal(false),
-    transaction_write_network_accessed: z.literal(false),
+    transaction_write_network_accessed: z.boolean(),
   })
   .strict();
 
@@ -132,10 +136,36 @@ export const api = {
     return parsed.data;
   },
 
-  planQboSync(realmId: string) {
+  planQboSync() {
     return request<QboSyncPlan>(
       "/api/v1/integrations/qbo/sync",
-      jsonInit("POST", { realm_id: realmId }),
+      jsonInit("POST", {}),
+    );
+  },
+
+  qboAccountPreflight() {
+    return request<QboAccountPreflight>(
+      "/api/v1/integrations/qbo/accounts/preflight",
+    );
+  },
+
+  qboPrewrite(itemId: string) {
+    return request<QboPrewrite>(
+      `/api/v1/integrations/qbo/sync-items/${encodeURIComponent(itemId)}/prewrite`,
+    );
+  },
+
+  issueDemoGrant(accessCode: string) {
+    return request<{ grant_token: string; expires_in_seconds: number }>(
+      "/api/v1/demo/access-grants",
+      jsonInit("POST", { access_code: accessCode }),
+    );
+  },
+
+  executeQboItem(itemId: string, grantToken: string, confirmation: string) {
+    return request<{ item_id: string; status: string; qbo_entity_id: string | null }>(
+      `/api/v1/integrations/qbo/sync-items/${encodeURIComponent(itemId)}/execute`,
+      jsonInit("POST", { grant_token: grantToken, confirmation }),
     );
   },
 
@@ -147,6 +177,13 @@ export const api = {
         end_date: endDate,
         qbo_report: qboReport,
       }),
+    );
+  },
+
+  reconcileFromQbo(startDate: string, endDate: string) {
+    return request<ReconciliationResult>(
+      "/api/v1/reconciliations/qbo",
+      jsonInit("POST", { start_date: startDate, end_date: endDate }),
     );
   },
 };

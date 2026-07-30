@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from hashlib import sha256
 from typing import Mapping
 
 from app.domain.accounts import parse_account
@@ -249,7 +250,12 @@ async def process_outbox_item(
     if item.status is not OutboxStatus.PROCESSING:
         raise ValueError(f"outbox item {item_id} is not executable")
     try:
-        result: QboCreateResult = await gateway.create_entity(item.payload_kind, item.payload)
+        request_id = sha256(item.idempotency_key.encode("utf-8")).hexdigest()[:50]
+        result: QboCreateResult = await gateway.create_entity(
+            item.payload_kind,
+            item.payload,
+            request_id=request_id,
+        )
     except QboGatewayError as error:
         status = OutboxStatus.RETRYABLE_FAILED if error.retryable else OutboxStatus.PERMANENT_FAILED
         retry_values = _retry_transition_values(item.attempt_count) if error.retryable else {}

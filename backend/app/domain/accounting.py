@@ -114,6 +114,8 @@ class QboProfitAndLoss:
     account_totals: Mapping[str, int]
     raw_snapshot: Mapping[str, object]
     net_profit_minor: int | None = None
+    no_report_data: bool = False
+    source: str = "qbo_sandbox"
 
     def __post_init__(self) -> None:
         for account_number, amount_minor in self.account_totals.items():

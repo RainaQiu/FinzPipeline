@@ -191,6 +191,7 @@ def test_parser_validates_qbo_report_scope_when_expected_period_is_supplied() ->
     payload = {
         **_qbo_account_payload("10.00"),
         "Header": {
+            "ReportName": "ProfitAndLoss",
             "ReportBasis": "Cash",
             "StartPeriod": "2026-04-01",
             "EndPeriod": "2026-06-30",
@@ -208,12 +209,52 @@ def test_parser_validates_qbo_report_scope_when_expected_period_is_supplied() ->
     assert report.account_totals["4000"] == 1000
 
 
+def test_parser_accepts_real_qbo_empty_cash_report_shape() -> None:
+    payload = {
+        "Header": {
+            "ReportName": "ProfitAndLoss",
+            "ReportBasis": "Cash",
+            "StartPeriod": "2026-04-01",
+            "EndPeriod": "2026-06-30",
+            "Currency": "USD",
+            "AccountingStandard": "GAAP",
+            "NoReportData": True,
+        },
+        "Rows": {
+            "Row": [
+                {
+                    "type": "Section",
+                    "group": "Income",
+                    "Summary": {"ColData": [{"value": "Total Income"}]},
+                },
+                {
+                    "type": "Section",
+                    "group": "NetIncome",
+                    "Summary": {"ColData": [{"value": "Net Income"}]},
+                },
+            ]
+        },
+    }
+
+    report = parse_qbo_pnl(
+        payload,
+        expected_start_date="2026-04-01",
+        expected_end_date="2026-06-30",
+        require_cash=True,
+    )
+
+    assert report.no_report_data is True
+    assert report.account_totals == {}
+    assert report.net_profit_minor == 0
+
+
 @pytest.mark.parametrize(
     ("header", "message"),
     [
         ({}, "Header"),
         (
             {
+                "ReportName": "ProfitAndLoss",
                 "ReportBasis": "Accrual",
                 "StartPeriod": "2026-04-01",
                 "EndPeriod": "2026-06-30",
@@ -223,6 +264,7 @@ def test_parser_validates_qbo_report_scope_when_expected_period_is_supplied() ->
         ),
         (
             {
+                "ReportName": "ProfitAndLoss",
                 "ReportBasis": "Cash",
                 "StartPeriod": "2026-04-02",
                 "EndPeriod": "2026-06-30",
@@ -232,6 +274,7 @@ def test_parser_validates_qbo_report_scope_when_expected_period_is_supplied() ->
         ),
         (
             {
+                "ReportName": "ProfitAndLoss",
                 "ReportBasis": "Cash",
                 "StartPeriod": "2026-04-01",
                 "EndPeriod": "2026-06-30",

@@ -14,6 +14,10 @@ export function ReconciliationPage() {
     mutationFn: (report: Record<string, unknown>) =>
       api.reconcile(startDate, endDate, report),
   });
+  const qboReconciliation = useMutation({
+    mutationFn: () => api.reconcileFromQbo(startDate, endDate),
+  });
+  const result = qboReconciliation.data ?? reconciliation.data;
 
   const submit = () => {
     try {
@@ -30,13 +34,13 @@ export function ReconciliationPage() {
       <PageHeader
         eyebrow="Zero-tolerance check"
         title="Reconciliation"
-        description="Compare the internal cash-basis P&L with a locally supplied QBO report."
+        description="Compare internal cash-basis P&L with the real BrightFix Sandbox report; local JSON remains a demo fallback."
         actions={
-          reconciliation.data ? (
+          result ? (
             <StatusBadge
-              tone={reconciliation.data.status === "matched" ? "success" : "danger"}
+              tone={result.status === "matched" ? "success" : "danger"}
             >
-              {reconciliation.data.status === "matched" ? "Matched" : "Mismatch"}
+              {result.status === "matched" ? "Matched" : "Mismatch"}
             </StatusBadge>
           ) : undefined
         }
@@ -46,8 +50,8 @@ export function ReconciliationPage() {
         <section className="reconciliation-form" aria-labelledby="reconcile-input-title">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Local input</p>
-              <h2 id="reconcile-input-title">QBO report payload</h2>
+              <p className="eyebrow">Sandbox read or local fallback</p>
+              <h2 id="reconcile-input-title">Cash-basis QBO report</h2>
             </div>
             <Scale aria-hidden="true" />
           </div>
@@ -69,6 +73,25 @@ export function ReconciliationPage() {
               />
             </label>
           </div>
+          <button
+            className="button primary full"
+            type="button"
+            disabled={qboReconciliation.isPending}
+            onClick={() => qboReconciliation.mutate()}
+          >
+            {qboReconciliation.isPending
+              ? "Reading QBO Sandbox…"
+              : "Read QBO Cash P&L and reconcile"}
+          </button>
+          {qboReconciliation.isError ? (
+            <ErrorState error={qboReconciliation.error} />
+          ) : null}
+          {qboReconciliation.data?.no_report_data ? (
+            <div className="state-message" role="status">
+              Valid empty QBO Cash report: no transactions have been synced for
+              this period yet.
+            </div>
+          ) : null}
           <label className="field">
             <span>QBO Profit and Loss JSON</span>
             <textarea
@@ -108,13 +131,13 @@ export function ReconciliationPage() {
               <h2 id="difference-title">Account differences</h2>
             </div>
           </div>
-          {!reconciliation.data ? (
+          {!result ? (
             <div className="empty-comparison">
               <Scale aria-hidden="true" />
               <strong>No comparison yet</strong>
-              <span>Submit a local QBO report to compare account totals.</span>
+              <span>Read the Sandbox report or submit a local payload.</span>
             </div>
-          ) : reconciliation.data.lines.length === 0 ? (
+          ) : result.lines.length === 0 ? (
             <div className="empty-comparison success">
               <CheckCircle2 aria-hidden="true" />
               <strong>Matched</strong>
@@ -132,7 +155,7 @@ export function ReconciliationPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {reconciliation.data.lines.map((line) => {
+                  {result.lines.map((line) => {
                     const mismatch = line.difference_minor !== 0;
                     return (
                       <tr key={line.account_number}>

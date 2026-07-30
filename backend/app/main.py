@@ -22,6 +22,7 @@ from app.core.logging import install_access_log_redaction
 from app.integrations.ai.protocol import DisabledClassificationProvider
 from app.integrations.gemini.client import GeminiClassificationProvider
 from app.integrations.quickbooks.client import QuickBooksClient
+from app.integrations.quickbooks.runtime import PersistentQuickBooksService
 from app.repositories.memory import InMemoryUnitOfWork
 from app.repositories.mongo import MongoUnitOfWork
 from app.services.ledger_bridge import LedgerBridgeService
@@ -122,7 +123,27 @@ def create_app(
     )
     app.state.settings = qbo_settings
     app.state.core_settings = settings
-    app.state.qbo_client = qbo_client or QuickBooksClient(qbo_settings)
+    if qbo_client is not None:
+        selected_qbo_client = qbo_client
+    elif (
+        settings.qbo_token_encryption_key is not None
+        and settings.qbo_expected_realm_id is not None
+    ):
+        selected_qbo_client = PersistentQuickBooksService(
+            qbo_settings,
+            selected_uow,
+            encryption_key=settings.qbo_token_encryption_key,
+            expected_realm_id=settings.qbo_expected_realm_id,
+            expected_company_name=settings.qbo_expected_company_name,
+        )
+    else:
+        selected_qbo_client = QuickBooksClient(qbo_settings)
+    app.state.qbo_client = selected_qbo_client
+    app.state.qbo_runtime = (
+        selected_qbo_client
+        if isinstance(selected_qbo_client, PersistentQuickBooksService)
+        else None
+    )
     app.state.unit_of_work = selected_uow
     app.state.repository_backend = (
         settings.repository_backend if unit_of_work is None else "injected"

@@ -4,13 +4,15 @@ import { QboPage } from "./QboPage";
 import { renderWithClient } from "../../test/render";
 
 describe("QboPage", () => {
-  it("makes plan-only execution limits explicit", async () => {
+  it("makes the guarded execution boundary explicit", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            mode: "plan_only",
+            mode: "demo_local",
+            connected: false,
+            company_name: null,
             execution_authorized: false,
             transaction_write_network_accessed: false,
           }),
@@ -20,7 +22,7 @@ describe("QboPage", () => {
     );
     renderWithClient(<QboPage />);
 
-    expect(await screen.findByText("Writes disabled")).toBeInTheDocument();
+    expect(await screen.findByText("Demo/local mode")).toBeInTheDocument();
     expect(screen.getAllByText(/pending outbox/i).length).toBeGreaterThan(0);
     const networkNote = screen
       .getByText(/No QBO transaction write network access has occurred/i)
@@ -36,7 +38,9 @@ describe("QboPage", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            mode: "plan_only",
+            mode: "demo_local",
+            connected: false,
+            company_name: null,
             execution_authorized: true,
             transaction_write_network_accessed: false,
           }),
@@ -54,7 +58,7 @@ describe("QboPage", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("posts a plan-only sync request and reports the pending items", async () => {
+  it("posts a guarded sync plan request and reports the pending items", async () => {
     const fetchMock = vi.fn().mockImplementation(
       (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
@@ -68,7 +72,9 @@ describe("QboPage", () => {
                 item_ids: ["1", "2", "3", "4"],
               }
             : {
-                mode: "plan_only",
+                mode: "demo_local",
+                connected: false,
+                company_name: null,
                 execution_authorized: false,
                 transaction_write_network_accessed: false,
               };
@@ -97,7 +103,7 @@ describe("QboPage", () => {
     );
     expect(syncCall?.[1]).toMatchObject({
       method: "POST",
-      body: JSON.stringify({ realm_id: "sandbox-realm" }),
+      body: JSON.stringify({}),
     });
   });
 });

@@ -28,6 +28,10 @@ def _settings(**overrides: object) -> Settings:
         "frontend_static_dir": None,
         "demo_reset_secret": SecretStr("Finz-Reset-7zN4pQ8vK2mR6xC9sL3wT5yH"),
         "demo_access_code": SecretStr("Finz-Interview-9vK2mR6x"),
+        "qbo_token_encryption_key": SecretStr(
+            "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+        ),
+        "qbo_expected_realm_id": "brightfix-test-realm",
     }
     values.update(overrides)
     return Settings(**values)
@@ -42,6 +46,8 @@ def _settings(**overrides: object) -> Settings:
         ({"qbo_client_id": None}, "QBO_CLIENT_ID"),
         ({"qbo_client_secret": None}, "QBO_CLIENT_SECRET"),
         ({"qbo_redirect_uri": None}, "QBO_REDIRECT_URI"),
+        ({"qbo_token_encryption_key": None}, "QBO_TOKEN_ENCRYPTION_KEY"),
+        ({"qbo_expected_realm_id": None}, "QBO_EXPECTED_REALM_ID"),
         ({"public_base_url": "http://demo.example.com"}, "APP_BASE_URL"),
         ({"demo_reset_secret": None}, "FINZ_DEMO_RESET_SECRET"),
         (

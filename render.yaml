@@ -25,6 +25,14 @@ services:
         sync: false
       - key: QBO_REDIRECT_URI
         sync: false
+      - key: QBO_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: QBO_EXPECTED_REALM_ID
+        sync: false
+      - key: QBO_EXPECTED_COMPANY_NAME
+        value: BrightFix Home Services LLC
+      - key: QBO_SANDBOX_WRITES_ENABLED
+        value: "false"
       - key: FINZ_DEMO_RESET_SECRET
         sync: false
       - key: FINZ_DEMO_ACCESS_CODE

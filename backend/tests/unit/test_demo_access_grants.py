@@ -180,7 +180,7 @@ def test_access_grant_api_returns_bearer_once_and_redacts_invalid_code(
     assert "hash" not in accepted.text
     assert ordinary.status_code == 200
     assert ordinary_demo_api.status_code == 200
-    assert ordinary_demo_api.json()["mode"] == "plan_only"
+    assert ordinary_demo_api.json()["mode"] == "demo_local"
     assert presented not in repr(AccessGrantRequest(access_code=presented))
     assert presented not in caplog.text
 

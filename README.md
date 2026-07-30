@@ -42,6 +42,12 @@ Render dashboard (they are deliberately not stored in the blueprint):
 - `MONGODB_URI` and `MONGODB_DATABASE` for a non-placeholder Mongo database.
 - Sandbox-only `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, and `QBO_REDIRECT_URI`
   (the redirect is `<APP_BASE_URL>/api/v1/integrations/qbo/callback`).
+- `QBO_TOKEN_ENCRYPTION_KEY` (a Fernet key), `QBO_EXPECTED_REALM_ID`, and
+  `FINZ_DEMO_ACCESS_CODE`. Keep `QBO_SANDBOX_WRITES_ENABLED=false` until a
+  reviewed write batch has separate explicit authorization.
+- `GEMINI_API_KEY` with `GEMINI_ENABLED=true` to enable the optional runtime
+  candidate classifier. Missing/quota-limited Gemini always falls back to
+  deterministic rules and human review.
 - `FINZ_DEMO_RESET_SECRET` to a dedicated random value used only by the weekly
   shared-workspace reset. Do not reuse the interviewer access code.
 - `FINZ_DEMO_ACCESS_CODE` to a strong interviewer access code of at least 12
@@ -64,6 +70,31 @@ readiness and does not expose connection details. This is a shared
 demonstration environment: do not upload sensitive or real financial data.
 Authentication, tenant isolation, and per-user data separation are
 intentionally outside this challenge demo scope.
+
+### Minimum cloud setup
+
+1. In MongoDB Atlas, create/select a free transaction-capable cluster, a
+   dedicated least-privilege app user, and network access for Render. Put its
+   application URI only in Render `MONGODB_URI`.
+2. In Render, connect `RainaQiu/FinzPipeline`, create the Blueprint service,
+   and fill every `sync: false` variable shown in `render.yaml`. The free
+   service can sleep, so the first request may be slow.
+3. In Intuit Development settings, add exactly
+   `<APP_BASE_URL>/api/v1/integrations/qbo/callback`; keep the app in
+   Development/Sandbox and connect only BrightFix Home Services LLC.
+4. Generate the Fernet token-encryption key and strong interviewer access
+   code locally; store them only in Render secrets. Send only the access code
+   to interviewers.
+5. Verify `/health`, then `/ready`, connect QBO, run the 21-account preflight,
+   and read the Cash-basis P&L. A valid `NoReportData=true` response means
+   nothing has been synced yet, not that parsing failed.
+
+Public deployment does not authorize transaction writes. The server requires
+all of: `QBO_SANDBOX_WRITES_ENABLED=true`, a one-time 15-minute grant obtained
+from the access code, the exact confirmation text shown in the UI, a complete
+21-account preflight (`6060 Utilities` must reuse QBO Id `114`), and the
+idempotent outbox item. The first real Sandbox write still requires a new,
+explicit approval describing entity types, count, period, totals, and rollback.
 
 ### Runtime Gemini boundary
 
@@ -150,10 +181,10 @@ the ignored `.env` must never be printed, committed, or copied into logs.
   must have equal-and-opposite legs; P&L arithmetic identities are verified.
 - Reconciliation requires an exact $0.00 difference against a Cash/USD QBO
   report for the requested period.
-- QBO sync endpoints create plan-only outbox items. Real transaction execution
-  requires separate implementation review and explicit user authorization.
-- A complete double-entry posting-plan/amount-conservation layer remains a
-  prerequisite before enabling real QBO transaction writes.
+- QBO sync endpoints create idempotent outbox items. Real Sandbox execution
+  remains disabled by default and requires account preflight, an access grant,
+  exact confirmation, a reviewed item preview, and explicit user authorization
+  for the first real write.
 - MongoDB Atlas and live QBO writes are not part of the verified local baseline.
 
 Design and implementation documents live under `docs/superpowers/`.

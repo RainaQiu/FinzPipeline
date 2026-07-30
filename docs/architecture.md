@@ -11,7 +11,7 @@ core:
    account/type/explanation candidate.
 5. A shared validator enforces the 21-account whitelist, direction/type
    consistency, confidence, and manual-review policy.
-6. Approved decisions feed cash-basis P&L and plan-only QBO outbox generation.
+6. Approved decisions feed cash-basis P&L and guarded, idempotent QBO outbox generation.
 7. Reconciliation compares internal totals with a scoped Cash/USD QBO report at
    an exact zero-cent tolerance.
 

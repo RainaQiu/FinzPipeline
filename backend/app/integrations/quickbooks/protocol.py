@@ -14,7 +14,11 @@ class QboCreateResult:
 
 class QuickBooksGateway(Protocol):
     async def create_entity(
-        self, kind: str, payload: Mapping[str, object]
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        request_id: str,
     ) -> QboCreateResult: ...
 
 

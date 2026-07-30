@@ -123,12 +123,16 @@ export interface ReconciliationResult {
   end_date: string;
   lines: ReconciliationLine[];
   internal_totals: PnlReport["totals"];
+  source?: "qbo_sandbox" | "local_payload";
+  no_report_data?: boolean;
 }
 
 export interface QboStatus {
-  mode: "plan_only";
+  mode: "demo_local" | "sandbox_read_only";
+  connected: boolean;
+  company_name: string | null;
   execution_authorized: false;
-  transaction_write_network_accessed: false;
+  transaction_write_network_accessed: boolean;
 }
 
 export interface QboSyncPlan {
@@ -137,4 +141,19 @@ export interface QboSyncPlan {
   execution_authorized: false;
   planned_items: number;
   item_ids: string[];
+}
+
+export interface QboPrewrite {
+  item_id: string;
+  entity_type: string;
+  status: string;
+  amount: string | null;
+  required_confirmation: string;
+  writes_enabled: boolean;
+}
+
+export interface QboAccountPreflight {
+  status: "ready";
+  account_count: number;
+  mapping: Record<string, string>;
 }
