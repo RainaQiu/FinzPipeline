@@ -26,7 +26,7 @@ def _settings(**overrides: object) -> Settings:
         "app_environment": "development",
         "public_base_url": "https://demo.example.com",
         "frontend_static_dir": None,
-        "demo_reset_secret": SecretStr("dedicated-reset-secret"),
+        "demo_reset_secret": SecretStr("Finz-Reset-7zN4pQ8vK2mR6xC9sL3wT5yH"),
     }
     values.update(overrides)
     return Settings(**values)
@@ -45,6 +45,14 @@ def _settings(**overrides: object) -> Settings:
         ({"demo_reset_secret": None}, "FINZ_DEMO_RESET_SECRET"),
         (
             {"demo_reset_secret": SecretStr("<dedicated-random-reset-secret>")},
+            "FINZ_DEMO_RESET_SECRET",
+        ),
+        (
+            {"demo_reset_secret": SecretStr("short-reset-secret")},
+            "FINZ_DEMO_RESET_SECRET",
+        ),
+        (
+            {"demo_reset_secret": SecretStr("a" * 40)},
             "FINZ_DEMO_RESET_SECRET",
         ),
     ],

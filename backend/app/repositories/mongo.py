@@ -749,6 +749,22 @@ class _MongoExecutionLeaseRepository:
     async def release(self, lease_id: str) -> None:
         await self._collection.delete_one({"_id": "active", "id": lease_id})
 
+    async def renew(
+        self, lease_id: str, *, now: datetime, expires_at: datetime
+    ) -> bool:
+        if expires_at <= now:
+            return False
+        document = await self._collection.find_one_and_update(
+            {
+                "_id": "active",
+                "id": lease_id,
+                "expires_at": {"$gt": now},
+            },
+            {"$set": {"expires_at": expires_at}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return document is not None and document.get("id") == lease_id
+
 
 class _MongoDemoResetRepository:
     _WORKSPACE_COLLECTIONS = (
@@ -764,7 +780,6 @@ class _MongoDemoResetRepository:
         "sync_runs",
         "reconciliation_runs",
         "demo_grants",
-        "reset_runs",
     )
 
     def __init__(self, database) -> None:
@@ -787,8 +802,17 @@ class _MongoDemoResetRepository:
                     return existing
             raise ImmutableRecordError(f"reset run {run.id!r} is immutable") from None
 
-    async def clear_shared_workspace(self) -> None:
+    async def get(self, run_id: str) -> ResetRun | None:
+        document = await self._collection.find_one({"_id": run_id})
+        return (
+            ResetRun(**_without_mongo_id(document))
+            if document is not None
+            else None
+        )
+
+    async def clear_shared_workspace(self, *, ensure_owner) -> None:
         for collection_name in self._WORKSPACE_COLLECTIONS:
+            await ensure_owner()
             await self._database[collection_name].delete_many({})
 
 

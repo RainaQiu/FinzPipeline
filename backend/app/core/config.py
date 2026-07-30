@@ -121,7 +121,13 @@ class Settings:
             if self.demo_reset_secret is not None
             else ""
         )
-        if not reset_secret or "placeholder" in reset_secret or "<" in reset_secret:
+        if (
+            len(reset_secret) < 32
+            or len(set(reset_secret)) < 12
+            or "placeholder" in reset_secret
+            or "<" in reset_secret
+            or reset_secret in {"password", "changeme", "demo-reset-secret"}
+        ):
             raise ConfigurationError(("FINZ_DEMO_RESET_SECRET",))
         if urlparse(self.public_base_url).scheme != "https":
             raise ConfigurationError(("APP_BASE_URL",))

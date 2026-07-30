@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from types import MappingProxyType
-from typing import Mapping, Protocol
+from typing import Awaitable, Callable, Mapping, Protocol
 
 from app.domain.accounting import OutboxItem, OutboxStatus
 from app.domain.classification import ClassificationDecision
@@ -190,13 +190,21 @@ class QboConnectionRepository(Protocol):
 class ExecutionLeaseRepository(Protocol):
     async def acquire(self, lease: ExecutionLease, *, now: datetime) -> bool: ...
 
+    async def renew(
+        self, lease_id: str, *, now: datetime, expires_at: datetime
+    ) -> bool: ...
+
     async def release(self, lease_id: str) -> None: ...
 
 
 class DemoResetRepository(Protocol):
     async def add(self, run: ResetRun) -> ResetRun: ...
 
-    async def clear_shared_workspace(self) -> None: ...
+    async def get(self, run_id: str) -> ResetRun | None: ...
+
+    async def clear_shared_workspace(
+        self, *, ensure_owner: Callable[[], Awaitable[None]]
+    ) -> None: ...
 
 
 class UnitOfWork(Protocol):

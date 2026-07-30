@@ -27,16 +27,16 @@ async def reset_shared_demo(
     service = DemoResetService(request.app.state.unit_of_work)
     try:
         result = await service.reset_shared_workspace()
-    except DemoResetInProgressError as exc:
+    except DemoResetInProgressError:
         raise HTTPException(
             status_code=409,
             detail="Shared workspace reset already in progress",
-        ) from exc
-    except Exception as exc:
+        ) from None
+    except Exception:
         raise HTTPException(
             status_code=503,
             detail="Shared workspace reset failed",
-        ) from exc
+        ) from None
     return {
         "status": result.status,
         "scope": result.scope,

@@ -15,6 +15,10 @@ class DemoResetInProgressError(RuntimeError):
     """Raised when another shared-workspace operation owns the execution lease."""
 
 
+class DemoResetLeaseLostError(RuntimeError):
+    """Raised when a reset loses its execution lease before clearing completes."""
+
+
 @dataclass(frozen=True, slots=True)
 class DemoResetResult:
     status: str = "reset_complete"
@@ -50,8 +54,19 @@ class DemoResetService:
         if not await self._unit_of_work.execution_leases.acquire(lease, now=now):
             raise DemoResetInProgressError("Shared workspace reset already in progress")
 
+        async def ensure_owner() -> None:
+            renewal_time = self._clock()
+            if not await self._unit_of_work.execution_leases.renew(
+                lease_id,
+                now=renewal_time,
+                expires_at=renewal_time + self._lease_duration,
+            ):
+                raise DemoResetLeaseLostError("Shared workspace reset lease was lost")
+
         try:
-            await self._unit_of_work.demo_reset.clear_shared_workspace()
+            await self._unit_of_work.demo_reset.clear_shared_workspace(
+                ensure_owner=ensure_owner
+            )
             completed_at = self._clock()
             await self._unit_of_work.demo_reset.add(
                 ResetRun(
@@ -62,5 +77,26 @@ class DemoResetService:
                 )
             )
             return DemoResetResult()
+        except Exception as error:
+            completed_at = self._clock()
+            error_code = (
+                "lease_lost"
+                if isinstance(error, DemoResetLeaseLostError)
+                else "repository_error"
+            )
+            try:
+                await self._unit_of_work.demo_reset.add(
+                    ResetRun(
+                        id=run_id,
+                        status="failed",
+                        started_at=now,
+                        completed_at=completed_at,
+                        error_code=error_code,
+                        stage="clear_shared_workspace",
+                    )
+                )
+            except Exception:
+                pass
+            raise
         finally:
             await self._unit_of_work.execution_leases.release(lease_id)

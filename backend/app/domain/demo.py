@@ -231,6 +231,8 @@ class ResetRun:
     status: str
     started_at: datetime
     completed_at: datetime | None = None
+    error_code: str | None = None
+    stage: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -242,3 +244,10 @@ class ResetRun:
                 "completed_at",
                 _canonical_datetime(self.completed_at, "completed_at"),
             )
+        if self.status in {"completed", "failed"} and self.completed_at is None:
+            raise ValueError("completed_at is required for a terminal reset run")
+        if self.status == "failed":
+            if not self.error_code or not self.stage:
+                raise ValueError("failed reset runs require error_code and stage")
+        elif self.error_code is not None or self.stage is not None:
+            raise ValueError("reset error details are only allowed when failed")

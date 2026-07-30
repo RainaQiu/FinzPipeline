@@ -75,7 +75,8 @@ def test_reset_endpoint_redacts_repository_failure() -> None:
     uow = InMemoryUnitOfWork()
 
     class FailingResetRepository:
-        async def clear_shared_workspace(self) -> None:
+        async def clear_shared_workspace(self, *, ensure_owner) -> None:
+            await ensure_owner()
             raise RuntimeError("mongodb://user:secret@example/reset failed")
 
         async def add(self, run):
@@ -105,4 +106,5 @@ def test_weekly_reset_workflow_uses_only_secret_reference_and_bounded_curl() -> 
     assert "vars.FINZ_DEMO_BASE_URL" in workflow
     assert "--max-time 30" in workflow
     assert "--retry 2" in workflow
+    assert "=~ ^https://[^/[:space:]]+" in workflow
     assert "dedicated-reset-secret" not in workflow

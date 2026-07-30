@@ -16,6 +16,17 @@ jobs:
       FINZ_DEMO_BASE_URL: ${{ vars.FINZ_DEMO_BASE_URL }}
       FINZ_DEMO_RESET_SECRET: ${{ secrets.FINZ_DEMO_RESET_SECRET }}
     steps:
+      - name: Validate reset configuration
+        shell: bash
+        run: |
+          if [[ -z "${FINZ_DEMO_RESET_SECRET}" ]]; then
+            echo "::error::FINZ_DEMO_RESET_SECRET is not configured"
+            exit 1
+          fi
+          if [[ ! "${FINZ_DEMO_BASE_URL}" =~ ^https://[^/[:space:]]+ ]]; then
+            echo "::error::FINZ_DEMO_BASE_URL must be a non-empty HTTPS URL"
+            exit 1
+          fi
       - name: Reset shared demo workspace
         shell: bash
         run: >

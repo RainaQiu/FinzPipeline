@@ -498,6 +498,21 @@ class _InMemoryExecutionLeaseRepository:
             if self._active is not None and self._active.id == lease_id:
                 self._active = None
 
+    async def renew(
+        self, lease_id: str, *, now: datetime, expires_at: datetime
+    ) -> bool:
+        if expires_at <= now:
+            return False
+        async with self._lock:
+            if (
+                self._active is None
+                or self._active.id != lease_id
+                or self._active.expires_at <= now
+            ):
+                return False
+            self._active = replace(self._active, expires_at=expires_at)
+            return True
+
 
 class _InMemoryDemoResetRepository:
     def __init__(
@@ -542,28 +557,39 @@ class _InMemoryDemoResetRepository:
                 raise ImmutableRecordError(f"reset run {run.id!r} is immutable")
             return existing
 
-    async def clear_shared_workspace(self) -> None:
+    async def get(self, run_id: str) -> ResetRun | None:
         async with self._lock:
-            self._uploads._records.clear()
-            self._pipeline_contexts._records.clear()
-            self._sync_runs._records.clear()
-            self._reconciliation_runs._records.clear()
-            self._demo_grants._records.clear()
-            self._records.clear()
-            async with self._raw_records._lock:
-                self._raw_records._records.clear()
-            async with self._transactions._lock:
-                self._transactions._transactions.clear()
-            async with self._classifications._lock:
-                self._classifications._by_id.clear()
-                self._classifications._by_transaction.clear()
-            async with self._outbox._lock:
-                self._outbox._by_id.clear()
-                self._outbox._by_key.clear()
-            async with self._oauth_states._lock:
-                self._oauth_states._states.clear()
-            async with self._audit._lock:
-                self._audit._events.clear()
+            return self._records.get(run_id)
+
+    async def clear_shared_workspace(self, *, ensure_owner) -> None:
+        async def clear(lock: asyncio.Lock, action) -> None:
+            await ensure_owner()
+            async with lock:
+                action()
+
+        await clear(self._lock, self._uploads._records.clear)
+        await clear(self._lock, self._pipeline_contexts._records.clear)
+        await clear(self._lock, self._sync_runs._records.clear)
+        await clear(self._lock, self._reconciliation_runs._records.clear)
+        await clear(self._lock, self._demo_grants._records.clear)
+        await clear(self._raw_records._lock, self._raw_records._records.clear)
+        await clear(
+            self._transactions._lock, self._transactions._transactions.clear
+        )
+
+        def clear_classifications() -> None:
+            self._classifications._by_id.clear()
+            self._classifications._by_transaction.clear()
+
+        await clear(self._classifications._lock, clear_classifications)
+
+        def clear_outbox() -> None:
+            self._outbox._by_id.clear()
+            self._outbox._by_key.clear()
+
+        await clear(self._outbox._lock, clear_outbox)
+        await clear(self._oauth_states._lock, self._oauth_states._states.clear)
+        await clear(self._audit._lock, self._audit._events.clear)
 
 
 class InMemoryUnitOfWork:

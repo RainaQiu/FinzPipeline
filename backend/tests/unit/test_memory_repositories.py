@@ -311,6 +311,92 @@ async def test_not_yet_acquired_candidate_lease_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_expired_lease_cannot_renew_after_another_owner_takes_over():
+    uow = InMemoryUnitOfWork()
+    now = datetime(2026, 4, 1, 12, tzinfo=timezone.utc)
+    first = ExecutionLease(
+        id="finz-test-first-owner",
+        acquired_at=now,
+        expires_at=now + timedelta(minutes=1),
+    )
+    second = ExecutionLease(
+        id="finz-test-second-owner",
+        acquired_at=now + timedelta(minutes=2),
+        expires_at=now + timedelta(minutes=7),
+    )
+    assert await uow.execution_leases.acquire(first, now=now)
+    assert await uow.execution_leases.acquire(
+        second, now=now + timedelta(minutes=2)
+    )
+
+    assert (
+        await uow.execution_leases.renew(
+            first.id,
+            now=now + timedelta(minutes=2),
+            expires_at=now + timedelta(minutes=7),
+        )
+        is False
+    )
+    assert await uow.execution_leases.renew(
+        second.id,
+        now=now + timedelta(minutes=2),
+        expires_at=now + timedelta(minutes=8),
+    )
+
+
+@pytest.mark.asyncio
+async def test_reset_stops_deleting_after_expired_owner_is_replaced():
+    uow = InMemoryUnitOfWork()
+    now = datetime(2026, 4, 1, 12, tzinfo=timezone.utc)
+    first = ExecutionLease(
+        id="finz-test-reset-owner-a",
+        acquired_at=now,
+        expires_at=now + timedelta(minutes=1),
+    )
+    await uow.uploads.add(
+        UploadRecord(
+            id="finz-test-owner-fenced-upload",
+            original_filename="finz-test.csv",
+            media_type="text/csv",
+            sha256="a" * 64,
+            data=b"amount\n100\n",
+            created_at=now,
+        )
+    )
+    await uow.raw_records.add(_raw("finz-test-owner-fenced-raw"))
+    assert await uow.execution_leases.acquire(first, now=now)
+    checks = 0
+
+    async def ensure_owner() -> None:
+        nonlocal checks
+        checks += 1
+        current = now
+        if checks == 2:
+            current = now + timedelta(minutes=2)
+            takeover = ExecutionLease(
+                id="finz-test-reset-owner-b",
+                acquired_at=current,
+                expires_at=current + timedelta(minutes=5),
+            )
+            assert await uow.execution_leases.acquire(takeover, now=current)
+        renewed = await uow.execution_leases.renew(
+            first.id,
+            now=current,
+            expires_at=current + timedelta(minutes=1),
+        )
+        if not renewed:
+            raise RuntimeError("lease lost")
+
+    with pytest.raises(RuntimeError, match="lease lost"):
+        await uow.demo_reset.clear_shared_workspace(
+            ensure_owner=ensure_owner
+        )
+
+    assert await uow.uploads.get("finz-test-owner-fenced-upload") is None
+    assert await uow.raw_records.get("finz-test-owner-fenced-raw") is not None
+
+
+@pytest.mark.asyncio
 async def test_reset_clears_demo_records_but_keeps_configuration():
     uow = InMemoryUnitOfWork()
     now = datetime(2026, 4, 1, tzinfo=timezone.utc)
@@ -390,7 +476,13 @@ async def test_reset_clears_demo_records_but_keeps_configuration():
         ResetRun(id="finz-test-reset", status="running", started_at=now)
     )
 
-    await uow.demo_reset.clear_shared_workspace()
+    owner_checks = 0
+
+    async def ensure_owner() -> None:
+        nonlocal owner_checks
+        owner_checks += 1
+
+    await uow.demo_reset.clear_shared_workspace(ensure_owner=ensure_owner)
 
     assert await uow.uploads.get(upload.id) is None
     assert await uow.pipeline_contexts.get(upload.id) is None
@@ -415,6 +507,7 @@ async def test_reset_clears_demo_records_but_keeps_configuration():
     assert await uow.execution_leases.acquire(replacement, now=now) is False
     await uow.execution_leases.release("finz-test-reset-lease")
     assert await uow.execution_leases.acquire(replacement, now=now) is True
+    assert owner_checks >= 10
 
 
 @pytest.mark.asyncio
