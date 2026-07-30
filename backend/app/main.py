@@ -19,6 +19,8 @@ from app.api.transactions import router as transactions_router
 from app.api.uploads import router as uploads_router
 from app.core.config import Settings
 from app.core.logging import install_access_log_redaction
+from app.integrations.ai.protocol import DisabledClassificationProvider
+from app.integrations.gemini.client import GeminiClassificationProvider
 from app.integrations.quickbooks.client import QuickBooksClient
 from app.repositories.memory import InMemoryUnitOfWork
 from app.repositories.mongo import MongoUnitOfWork
@@ -126,9 +128,21 @@ def create_app(
         settings.repository_backend if unit_of_work is None else "injected"
     )
     app.state.qbo_gateway = qbo_gateway
-    app.state.ai_provider = ai_provider
+    selected_ai_provider = ai_provider
+    if selected_ai_provider is None:
+        selected_ai_provider = (
+            GeminiClassificationProvider(
+                api_key=settings.gemini_api_key,
+                model=settings.gemini_model,
+            )
+            if settings.gemini_enabled and settings.gemini_api_key is not None
+            else DisabledClassificationProvider()
+        )
+    app.state.ai_provider = selected_ai_provider
     app.state.ledger_bridge = ledger_bridge or LedgerBridgeService(
-        app.state.unit_of_work
+        app.state.unit_of_work,
+        classification_provider=selected_ai_provider,
+        max_ai_candidates_per_upload=settings.gemini_max_candidates_per_upload,
     )
     app.state.demo_access_grant_service = (
         demo_access_grant_service

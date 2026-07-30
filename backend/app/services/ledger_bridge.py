@@ -9,11 +9,19 @@ from secrets import token_urlsafe
 from typing import Callable, Mapping
 from uuid import uuid4
 
+from app.domain.accounts import ACCOUNT_DEFINITIONS
 from app.domain.classification import (
     ApprovalStatus,
     ClassificationDecision,
     DecisionSource,
     TransactionType,
+)
+from app.domain.transactions import Direction
+from app.integrations.ai.protocol import (
+    AllowedAccount,
+    ClassificationInput,
+    ClassificationProvider,
+    DisabledClassificationProvider,
 )
 from app.domain.demo import (
     PipelineContext,
@@ -33,7 +41,7 @@ from app.services.classification import (
     classify_transaction,
     validate_accounting_decision,
 )
-from app.services.deduplication import deduplicate
+from app.services.deduplication import DuplicateStatus, deduplicate
 from app.services.ingestion import MAX_FILE_BYTES, IngestionMapping, ingest_rows
 from app.services.pnl import build_pnl
 from app.services.qbo_sync import SyncCandidate, plan_sync
@@ -92,9 +100,24 @@ class LedgerBridgeService:
         unit_of_work: UnitOfWork,
         *,
         clock: Callable[[], datetime] | None = None,
+        classification_provider: ClassificationProvider | None = None,
+        max_ai_candidates_per_upload: int = 10,
     ) -> None:
+        if not 0 <= max_ai_candidates_per_upload <= 10:
+            raise ValueError("max_ai_candidates_per_upload must be between 0 and 10")
         self.unit_of_work = unit_of_work
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._classification_provider = (
+            classification_provider or DisabledClassificationProvider()
+        )
+        self._max_ai_candidates_per_upload = max_ai_candidates_per_upload
+        self._allowed_accounts = tuple(
+            AllowedAccount(
+                number=account.number,
+                account_type=account.account_type,
+            )
+            for account in ACCOUNT_DEFINITIONS.values()
+        )
 
     async def create_upload(
         self, *, filename: str, media_type: str, data: bytes
@@ -248,19 +271,47 @@ class LedgerBridgeService:
                 if transaction.id not in transfer_ids
                 and "TRANSFER" in transaction.description_normalized
             )
-            decisions = tuple(
-                classify_transaction(
-                    transaction,
-                    ClassificationContext(
-                        matched_transfer_ids=transfer_ids,
-                        unmatched_transfer_ids=unmatched_transfer_ids,
-                        possible_duplicate_ids=frozenset(
-                            item.id for item in deduplication.possible_duplicates
-                        ),
-                    ),
-                )
-                for transaction in deduplication.canonical_transactions
+            decisions_list: list[ClassificationDecision] = []
+            ai_attempts = 0
+            possible_duplicate_ids = frozenset(
+                item.id for item in deduplication.possible_duplicates
             )
+            for transaction in deduplication.canonical_transactions:
+                classification_context = ClassificationContext(
+                    matched_transfer_ids=transfer_ids,
+                    unmatched_transfer_ids=unmatched_transfer_ids,
+                    possible_duplicate_ids=possible_duplicate_ids,
+                )
+                deterministic = classify_transaction(
+                    transaction,
+                    classification_context,
+                )
+                decision = deterministic
+                if (
+                    deterministic.source is DecisionSource.HUMAN
+                    and transaction.direction is Direction.OUTFLOW
+                    and deduplication.status_by_id[transaction.id]
+                    is DuplicateStatus.UNIQUE
+                    and ai_attempts < self._max_ai_candidates_per_upload
+                ):
+                    ai_attempts += 1
+                    try:
+                        proposal = await self._classification_provider.classify(
+                            ClassificationInput.from_transaction(transaction),
+                            self._allowed_accounts,
+                        )
+                        if proposal is not None:
+                            decision = classify_transaction(
+                                transaction,
+                                replace(
+                                    classification_context,
+                                    ai_proposal=proposal,
+                                ),
+                            )
+                    except Exception:
+                        decision = deterministic
+                decisions_list.append(decision)
+            decisions = tuple(decisions_list)
             counts = {
                 "raw": len(batch.raw_records),
                 "unique": len(deduplication.canonical_transactions),

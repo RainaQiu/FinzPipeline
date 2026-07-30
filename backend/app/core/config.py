@@ -29,9 +29,20 @@ class Settings:
     frontend_static_dir: Path | None
     demo_reset_secret: SecretStr | None
     demo_access_code: SecretStr | None = None
+    gemini_enabled: bool = False
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-3.5-flash-lite"
+    gemini_max_candidates_per_upload: int = 10
 
     @classmethod
     def from_environment(cls, require_qbo: bool = False) -> "Settings":
+        gemini_enabled = _strict_bool("GEMINI_ENABLED", default=False)
+        gemini_max_candidates = _bounded_int(
+            "GEMINI_MAX_CANDIDATES_PER_UPLOAD",
+            default=10,
+            minimum=0,
+            maximum=10,
+        )
         qbo_values = {
             "QBO_CLIENT_ID": os.getenv("QBO_CLIENT_ID", "").strip(),
             "QBO_CLIENT_SECRET": os.getenv("QBO_CLIENT_SECRET", "").strip(),
@@ -90,6 +101,17 @@ class Settings:
                 if (value := os.getenv("FINZ_DEMO_ACCESS_CODE", "").strip())
                 else None
             ),
+            gemini_enabled=gemini_enabled,
+            gemini_api_key=(
+                SecretStr(value)
+                if (value := os.getenv("GEMINI_API_KEY", "").strip())
+                else None
+            ),
+            gemini_model=(
+                os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+                or "gemini-3.5-flash-lite"
+            ),
+            gemini_max_candidates_per_upload=gemini_max_candidates,
         )
 
     def validate_public_runtime(self) -> None:
@@ -170,3 +192,29 @@ class Settings:
             raise ConfigurationError(("QBO_REDIRECT_URI",))
         if self.frontend_static_dir is None or not (self.frontend_static_dir / "index.html").is_file():
             raise RuntimeError("Production startup requires a built frontend directory with index.html")
+
+
+def _strict_bool(name: str, *, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    if raw_value == "true":
+        return True
+    if raw_value == "false":
+        return False
+    raise ValueError(f"{name} must be exactly true or false")
+
+
+def _bounded_int(
+    name: str, *, default: int, minimum: int, maximum: int
+) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value

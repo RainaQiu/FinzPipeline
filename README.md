@@ -47,6 +47,10 @@ Render dashboard (they are deliberately not stored in the blueprint):
 - `FINZ_DEMO_ACCESS_CODE` to a strong interviewer access code of at least 12
   characters. Keep it separate from the reset secret and send it outside the
   public repository.
+- `GEMINI_API_KEY` to the dedicated runtime key. `GEMINI_ENABLED=true`,
+  `GEMINI_MODEL=gemini-3.5-flash-lite`, and the per-upload candidate cap are
+  already declared by the blueprint. If the key is absent, Gemini is disabled
+  and deterministic classification continues normally.
 
 The blueprint explicitly selects Render's free plan, so the service may sleep
 when idle and its first request after sleeping may be slow. It also selects the
@@ -60,6 +64,21 @@ readiness and does not expose connection details. This is a shared
 demonstration environment: do not upload sensitive or real financial data.
 Authentication, tenant isolation, and per-user data separation are
 intentionally outside this challenge demo scope.
+
+### Runtime Gemini boundary
+
+Codex was used as a development tool. Gemini is the optional runtime
+candidate classifier required by the challenge: deterministic rules run
+first, and Gemini is consulted only for otherwise-unknown outflows, up to ten
+times per upload. It receives normalized minimal fields rather than the
+uploaded file and can return only a typed candidate from the fixed 21-account
+chart. Every Gemini result remains a suggested item requiring human review;
+rules, schema/accounting validation, and human approval are authoritative.
+
+The automated Gemini coverage is mock/contract verification and does not
+prove a live Google API call. A future live smoke test must use only minimal
+fields from the challenge's synthetic data, never a raw file or sensitive
+financial data. See [docs/ai-usage.md](docs/ai-usage.md).
 
 ### Weekly shared-workspace reset
 

@@ -138,6 +138,10 @@ def test_render_blueprint_uses_free_plan_and_mongo_repository() -> None:
 
     assert "plan: free" in blueprint
     assert "key: FINZ_REPOSITORY_BACKEND\n        value: mongo" in blueprint
+    assert "key: GEMINI_ENABLED\n        value: true" in blueprint
+    assert "key: GEMINI_API_KEY\n        sync: false" in blueprint
+    assert "key: GEMINI_MODEL\n        value: gemini-3.5-flash-lite" in blueprint
+    assert "key: GEMINI_MAX_CANDIDATES_PER_UPLOAD\n        value: 10" in blueprint
 
 
 def test_production_startup_fails_when_mongo_index_initialization_fails(

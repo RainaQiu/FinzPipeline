@@ -42,3 +42,41 @@ def test_secret_settings_redact_string_representation(monkeypatch):
     assert "private-password" not in str(settings.mongodb_uri)
     assert "private-client-secret" not in str(settings.qbo_client_secret)
     assert "private-interviewer-code" not in repr(settings)
+
+
+def test_gemini_settings_are_optional_and_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("GEMINI_ENABLED", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_MAX_CANDIDATES_PER_UPLOAD", raising=False)
+
+    settings = Settings.from_environment()
+
+    assert settings.gemini_enabled is False
+    assert settings.gemini_api_key is None
+    assert settings.gemini_model == "gemini-3.5-flash-lite"
+    assert settings.gemini_max_candidates_per_upload == 10
+
+
+@pytest.mark.parametrize("value", ["1", "yes", "on", "TRUE ", "enabled"])
+def test_gemini_enabled_accepts_only_strict_boolean_text(monkeypatch, value):
+    monkeypatch.setenv("GEMINI_ENABLED", value)
+
+    with pytest.raises(ValueError, match="GEMINI_ENABLED"):
+        Settings.from_environment()
+
+
+@pytest.mark.parametrize("value", ["-1", "11", "not-an-integer"])
+def test_gemini_candidate_cap_is_bounded(monkeypatch, value):
+    monkeypatch.setenv("GEMINI_MAX_CANDIDATES_PER_UPLOAD", value)
+
+    with pytest.raises(ValueError, match="GEMINI_MAX_CANDIDATES_PER_UPLOAD"):
+        Settings.from_environment()
+
+
+def test_gemini_key_is_redacted_from_settings_repr(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "private-gemini-key")
+
+    settings = Settings.from_environment()
+
+    assert "private-gemini-key" not in repr(settings)
