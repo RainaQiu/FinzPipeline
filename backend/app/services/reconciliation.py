@@ -110,7 +110,8 @@ def _validate_report_scope(
     header = payload.get("Header")
     if not isinstance(header, Mapping) or not header:
         raise ValueError("QBO P&L Header is required for scoped reconciliation")
-    if str(header.get("ReportName", "")).casefold() != "profitandloss":
+    report_name = str(header.get("ReportName", "")).strip()
+    if report_name and report_name.casefold() != "profitandloss":
         raise ValueError("QBO report must be ProfitAndLoss")
     if require_cash and str(header.get("ReportBasis", "")).casefold() != "cash":
         raise ValueError("QBO P&L must use Cash report basis")
