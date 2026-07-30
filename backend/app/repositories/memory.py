@@ -549,7 +549,6 @@ class _InMemoryDemoResetRepository:
             self._sync_runs._records.clear()
             self._reconciliation_runs._records.clear()
             self._demo_grants._records.clear()
-            self._execution_leases._active = None
             self._records.clear()
             async with self._raw_records._lock:
                 self._raw_records._records.clear()

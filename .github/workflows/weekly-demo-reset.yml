@@ -1,0 +1,26 @@
+name: Weekly shared demo reset
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      FINZ_DEMO_BASE_URL: ${{ vars.FINZ_DEMO_BASE_URL }}
+      FINZ_DEMO_RESET_SECRET: ${{ secrets.FINZ_DEMO_RESET_SECRET }}
+    steps:
+      - name: Reset shared demo workspace
+        shell: bash
+        run: >
+          curl --silent --show-error --fail-with-body
+          --max-time 30 --retry 2 --retry-delay 5 --retry-all-errors
+          -X POST
+          -H "X-Finz-Reset-Secret: ${FINZ_DEMO_RESET_SECRET}"
+          "${FINZ_DEMO_BASE_URL%/}/api/v1/admin/reset"

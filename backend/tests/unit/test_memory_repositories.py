@@ -407,14 +407,14 @@ async def test_reset_clears_demo_records_but_keeps_configuration():
         is None
     )
     assert await uow.qbo_connection.get() == connection
-    assert await uow.execution_leases.acquire(
-        ExecutionLease(
-            id="finz-test-after-reset-lease",
-            acquired_at=now,
-            expires_at=now.replace(hour=1),
-        ),
-        now=now,
+    replacement = ExecutionLease(
+        id="finz-test-after-reset-lease",
+        acquired_at=now,
+        expires_at=now.replace(hour=1),
     )
+    assert await uow.execution_leases.acquire(replacement, now=now) is False
+    await uow.execution_leases.release("finz-test-reset-lease")
+    assert await uow.execution_leases.acquire(replacement, now=now) is True
 
 
 @pytest.mark.asyncio

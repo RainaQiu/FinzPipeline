@@ -26,6 +26,7 @@ def _settings(**overrides: object) -> Settings:
         "app_environment": "development",
         "public_base_url": "https://demo.example.com",
         "frontend_static_dir": None,
+        "demo_reset_secret": SecretStr("dedicated-reset-secret"),
     }
     values.update(overrides)
     return Settings(**values)
@@ -41,6 +42,11 @@ def _settings(**overrides: object) -> Settings:
         ({"qbo_client_secret": None}, "QBO_CLIENT_SECRET"),
         ({"qbo_redirect_uri": None}, "QBO_REDIRECT_URI"),
         ({"public_base_url": "http://demo.example.com"}, "APP_BASE_URL"),
+        ({"demo_reset_secret": None}, "FINZ_DEMO_RESET_SECRET"),
+        (
+            {"demo_reset_secret": SecretStr("<dedicated-random-reset-secret>")},
+            "FINZ_DEMO_RESET_SECRET",
+        ),
     ],
 )
 def test_production_rejects_unsafe_runtime_configuration(

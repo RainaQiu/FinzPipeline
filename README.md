@@ -42,6 +42,8 @@ Render dashboard (they are deliberately not stored in the blueprint):
 - `MONGODB_URI` and `MONGODB_DATABASE` for a non-placeholder Mongo database.
 - Sandbox-only `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, and `QBO_REDIRECT_URI`
   (the redirect is `<APP_BASE_URL>/api/v1/integrations/qbo/callback`).
+- `FINZ_DEMO_RESET_SECRET` to a dedicated random value used only by the weekly
+  shared-workspace reset. Do not reuse the interviewer access code.
 
 The blueprint explicitly selects Render's free plan, so the service may sleep
 when idle and its first request after sleeping may be slow. It also selects the
@@ -55,6 +57,17 @@ readiness and does not expose connection details. This is a shared
 demonstration environment: do not upload sensitive or real financial data.
 Authentication, tenant isolation, and per-user data separation are
 intentionally outside this challenge demo scope.
+
+### Weekly shared-workspace reset
+
+The `Weekly shared demo reset` GitHub Actions workflow calls the protected
+`POST /api/v1/admin/reset` endpoint every Monday. Configure the repository
+variable `FINZ_DEMO_BASE_URL` with the Render HTTPS origin and the GitHub
+Actions secret `FINZ_DEMO_RESET_SECRET` with the same dedicated value stored in
+Render. The endpoint clears only the repository-defined shared demo/workflow
+collections. It deliberately preserves the encrypted singleton
+`qbo_connections` configuration and uses the existing execution lease to
+prevent overlap with another protected operation.
 
 ## Tests
 

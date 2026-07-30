@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from app.api.errors import install_error_handlers
 from app.api.health import router as health_router
+from app.api.demo_reset import router as demo_reset_router
 from app.api.classifications import router as classifications_router
 from app.api.qbo_oauth import router as qbo_oauth_router
 from app.api.qbo_sync import router as qbo_sync_router
@@ -114,6 +115,7 @@ def create_app(
 
     install_error_handlers(app)
     app.include_router(health_router)
+    app.include_router(demo_reset_router)
     app.include_router(uploads_router)
     app.include_router(transactions_router)
     app.include_router(classifications_router)

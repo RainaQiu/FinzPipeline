@@ -764,7 +764,6 @@ class _MongoDemoResetRepository:
         "sync_runs",
         "reconciliation_runs",
         "demo_grants",
-        "execution_leases",
         "reset_runs",
     )
 

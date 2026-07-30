@@ -26,6 +26,7 @@ class Settings:
     app_environment: str
     public_base_url: str
     frontend_static_dir: Path | None
+    demo_reset_secret: SecretStr | None
 
     @classmethod
     def from_environment(cls, require_qbo: bool = False) -> "Settings":
@@ -77,6 +78,11 @@ class Settings:
                 if (value := os.getenv("FRONTEND_STATIC_DIR", "").strip())
                 else None
             ),
+            demo_reset_secret=(
+                SecretStr(value)
+                if (value := os.getenv("FINZ_DEMO_RESET_SECRET", "").strip())
+                else None
+            ),
         )
 
     def validate_public_runtime(self) -> None:
@@ -110,6 +116,13 @@ class Settings:
             raise ConfigurationError(("QBO_BASE_URL",))
         if self.qbo_scope != "com.intuit.quickbooks.accounting":
             raise ConfigurationError(("QBO_SCOPE",))
+        reset_secret = (
+            self.demo_reset_secret.get_secret_value().strip().lower()
+            if self.demo_reset_secret is not None
+            else ""
+        )
+        if not reset_secret or "placeholder" in reset_secret or "<" in reset_secret:
+            raise ConfigurationError(("FINZ_DEMO_RESET_SECRET",))
         if urlparse(self.public_base_url).scheme != "https":
             raise ConfigurationError(("APP_BASE_URL",))
         expected_redirect = (

@@ -539,6 +539,11 @@ async def test_scoped_reset_clears_demo_records_but_keeps_qbo_connection(mongo_u
         acquired_at=now,
         expires_at=now + timedelta(minutes=5),
     )
+    assert (
+        await mongo_uow.execution_leases.acquire(after_reset_lease, now=now)
+        is False
+    )
+    await mongo_uow.execution_leases.release(lease.id)
     assert await mongo_uow.execution_leases.acquire(after_reset_lease, now=now)
     first_event = await mongo_uow.audit.append(
         AuditEvent("finz-test-event-after-reset", {}, now)
