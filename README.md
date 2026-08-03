@@ -134,7 +134,9 @@ The `Weekly shared demo reset` GitHub Actions workflow calls the protected
 `POST /api/v1/admin/reset` endpoint every Monday. Configure the repository
 variable `FINZ_DEMO_BASE_URL` with the Render HTTPS origin and the GitHub
 Actions secret `FINZ_DEMO_RESET_SECRET` with the same dedicated value stored in
-Render. The endpoint clears only the repository-defined shared demo/workflow
+Render. If `FINZ_DEMO_RESET_SECRET` is not configured, the workflow logs a
+warning and skips the reset step. The endpoint clears only the
+repository-defined shared demo/workflow
 collections. It deliberately preserves the encrypted singleton
 `qbo_connections` configuration and uses the existing execution lease to
 prevent overlap with another protected operation.
