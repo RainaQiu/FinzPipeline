@@ -17,17 +17,21 @@ jobs:
       FINZ_DEMO_RESET_SECRET: ${{ secrets.FINZ_DEMO_RESET_SECRET }}
     steps:
       - name: Validate reset configuration
+        id: validate_config
         shell: bash
         run: |
           if [[ -z "${FINZ_DEMO_RESET_SECRET}" ]]; then
-            echo "::error::FINZ_DEMO_RESET_SECRET is not configured"
-            exit 1
+            echo "::warning::FINZ_DEMO_RESET_SECRET is not configured; skipping reset"
+            echo "should_reset=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [[ ! "${FINZ_DEMO_BASE_URL}" =~ ^https://[^/[:space:]]+ ]]; then
             echo "::error::FINZ_DEMO_BASE_URL must be a non-empty HTTPS URL"
             exit 1
           fi
+          echo "should_reset=true" >> "$GITHUB_OUTPUT"
       - name: Reset shared demo workspace
+        if: steps.validate_config.outputs.should_reset == 'true'
         shell: bash
         run: >
           curl --silent --show-error --fail-with-body
